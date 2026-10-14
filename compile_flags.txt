@@ -1,0 +1,6 @@
+-Isrc
+-Ichips
+-Ithird_party
+-DSOKOL_GLCORE
+-xc
+-std=gnu11
