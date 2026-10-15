@@ -1775,6 +1775,15 @@ typedef struct sapp_allocator {
     _SAPP_LOGITEM_XMACRO(LINUX_X11_QUERY_SYSTEM_DPI_FAILED, "failed to query system dpi value, assuming default 96.0") \
     _SAPP_LOGITEM_XMACRO(LINUX_X11_DROPPED_FILE_URI_WRONG_SCHEME, "dropped file URL doesn't start with 'file://'") \
     _SAPP_LOGITEM_XMACRO(LINUX_X11_FAILED_TO_BECOME_OWNER_OF_CLIPBOARD, "X11: Failed to become owner of clipboard selection") \
+    _SAPP_LOGITEM_XMACRO(LINUX_WAYLAND_DISPLAY_CONNECT_FAILED, "wl_display_connect() failed") \
+    _SAPP_LOGITEM_XMACRO(LINUX_WAYLAND_COMPOSITOR_MISSING, "the compositor does not offer wl_compositor") \
+    _SAPP_LOGITEM_XMACRO(LINUX_WAYLAND_XDGWM_DONE, "xdg_wm_base was destroyed by the compositor without a reason") \
+    _SAPP_LOGITEM_XMACRO(LINUX_WAYLAND_NO_SEAT, "the compositor does not offer wl_seat") \
+    _SAPP_LOGITEM_XMACRO(LINUX_WAYLAND_KEYMAP_FAILED, "failed to load the keymap offered by the compositor") \
+    _SAPP_LOGITEM_XMACRO(LINUX_WAYLAND_NO_OUTPUT, "the compositor does not offer wl_output, assuming scale 1") \
+    _SAPP_LOGITEM_XMACRO(LINUX_WAYLAND_CREATE_SURFACE_FAILED, "failed to create the wl_surface") \
+    _SAPP_LOGITEM_XMACRO(LINUX_WAYLAND_NO_DECORATIONS, "no server-side decorations available, window gets no close button") \
+    _SAPP_LOGITEM_XMACRO(LINUX_WAYLAND_CURSOR_FALLBACK, "no matching cursor in the theme, hiding the cursor") \
     _SAPP_LOGITEM_XMACRO(ANDROID_UNSUPPORTED_INPUT_EVENT_INPUT_CB, "unsupported input event encountered in _sapp_android_input_cb()") \
     _SAPP_LOGITEM_XMACRO(ANDROID_UNSUPPORTED_INPUT_EVENT_MAIN_CB, "unsupported input event encountered in _sapp_android_main_cb()") \
     _SAPP_LOGITEM_XMACRO(ANDROID_READ_MSG_FAILED, "failed to read message in _sapp_android_main_cb()") \
@@ -2397,8 +2406,18 @@ inline void sapp_run(const sapp_desc& desc) { return sapp_run(&desc); }
     #if !defined(SOKOL_GLCORE) && !defined(SOKOL_GLES3) && !defined(SOKOL_WGPU) && !defined(SOKOL_VULKAN)
         #error("sokol_app.h: unknown 3D API selected for Linux, must be SOKOL_GLCORE, SOKOL_GLES3, SOKOL_WGPU or SOKOL_VULKAN")
     #endif
+    #if defined(SOKOL_WAYLAND)
+        // native Wayland backend: window system and input by Wayland only,
+        // the GL context always comes through EGL (there is no GLX on Wayland)
+        #define _SAPP_WAYLAND (1)
+    #else
+        // the X11 backend, so far the only Linux window system
+        #define _SAPP_X11 (1)
+    #endif
     #if defined(SOKOL_GLCORE)
-        #if defined(SOKOL_FORCE_EGL)
+        #if defined(_SAPP_WAYLAND)
+            #define _SAPP_EGL (1)
+        #elif defined(SOKOL_FORCE_EGL)
             #define _SAPP_EGL (1)
         #else
             #define _SAPP_GLX (1)
@@ -2410,7 +2429,11 @@ inline void sapp_run(const sapp_desc& desc) { return sapp_run(&desc); }
         #include <GLES3/gl3.h>
         #include <GLES3/gl3ext.h>
     #elif defined(SOKOL_VULKAN)
-        #define VK_USE_PLATFORM_XLIB_KHR
+        #if defined(_SAPP_WAYLAND)
+            #define VK_USE_PLATFORM_WAYLAND_KHR
+        #else
+            #define VK_USE_PLATFORM_XLIB_KHR
+        #endif
         #include <vulkan/vulkan.h>
     #endif
 #else
@@ -2568,17 +2591,25 @@ inline void sapp_run(const sapp_desc& desc) { return sapp_run(&desc); }
     #include <EGL/egl.h>
     #include <GLES3/gl3.h>
 #elif defined(_SAPP_LINUX)
-    #define GL_GLEXT_PROTOTYPES
-    #include <X11/Xlib.h>
-    #include <X11/Xutil.h>
-    #include <X11/XKBlib.h>
-    #include <X11/keysym.h>
-    #include <X11/Xresource.h>
-    #include <X11/Xatom.h>
-    #include <X11/extensions/XInput2.h>
-    #include <X11/Xcursor/Xcursor.h>
-    #include <X11/cursorfont.h> /* XC_* font cursors */
-    #include <X11/Xmd.h> /* CARD32 */
+    #if defined(_SAPP_WAYLAND)
+        #include <wayland-client.h>
+        #include "wayland/xdg-shell-client-protocol.h"
+        #include "wayland/xdg-decoration-unstable-v1-client-protocol.h"
+        #include <xkbcommon/xkbcommon.h>
+        #include <wayland-cursor.h>
+    #else
+        #define GL_GLEXT_PROTOTYPES
+        #include <X11/Xlib.h>
+        #include <X11/Xutil.h>
+        #include <X11/XKBlib.h>
+        #include <X11/keysym.h>
+        #include <X11/Xresource.h>
+        #include <X11/Xatom.h>
+        #include <X11/extensions/XInput2.h>
+        #include <X11/Xcursor/Xcursor.h>
+        #include <X11/cursorfont.h> /* XC_* font cursors */
+        #include <X11/Xmd.h> /* CARD32 */
+    #endif
     #if defined(_SAPP_EGL)
         #include <EGL/egl.h>
     #endif
@@ -3104,6 +3135,8 @@ typedef struct {
 
 #if defined(_SAPP_LINUX)
 
+#if defined(_SAPP_X11)
+
 #define _SAPP_X11_XDND_VERSION (5)
 #define _SAPP_X11_MAX_X11_KEYCODES (256)
 
@@ -3262,6 +3295,72 @@ typedef struct {
     EGLSurface surface;
 } _sapp_egl_t;
 #endif // _SAPP_EGL
+
+#else // _SAPP_X11 -> the Wayland backend
+
+// the window system objects, bound from the registry in _sapp_wayland_registry_global()
+typedef struct {
+    struct wl_display* display;
+    struct wl_registry* registry;
+    struct wl_compositor* compositor;
+    struct wl_surface* surface;
+    struct xdg_wm_base* wm_base;
+    struct xdg_surface* xdg_surface;
+    struct xdg_toplevel* toplevel;
+    struct zxdg_decoration_manager_v1* decor_mgr;
+    struct zxdg_toplevel_decoration_v1* decoration;
+    struct wl_seat* seat;
+    struct wl_output* output;
+    struct wl_data_device_manager* data_device_mgr;
+    struct wl_data_device* data_device;
+    // input, created when the seat announces its capabilities
+    struct wl_pointer* pointer;
+    struct wl_keyboard* keyboard;
+    // keyboard state, updated from the keymap the compositor hands out
+    struct xkb_context* xkb_ctx;
+    struct xkb_keymap* xkb_keymap;
+    struct xkb_state* xkb_state;
+    // last serials, needed as arguments to follow-up requests
+    uint32_t pointer_enter_serial;
+    uint32_t pointer_button_serial;
+    uint32_t keyboard_enter_serial;
+    bool pointer_focus;                 // pointer over the window surface
+    int32_t configured_width;           // the last acked window size in device px
+    int32_t configured_height;
+    uint32_t configure_serial;          // serial of the pending xdg_surface.configure
+    bool have_configure_serial;         // ...valid and not acked yet
+    bool pending_ack;                   // an unacked configure is queued for next frame
+    bool window_mapped;                 // the first frame has been committed after map
+    bool waiting_configure;             // an old-style resize ack is in flight
+    int32_t new_width;                  // resize applied on the next frame commit
+    int32_t new_height;
+    bool resize_pending;
+    bool decoration_ready;              // xdg-decoration configure arrived
+    enum zxdg_toplevel_decoration_v1_mode decoration_mode;
+    int32_t output_scale;               // wl_output.scale, at least 1
+    bool have_scale_event;
+    struct wl_cursor_theme* cursor_theme;
+    int32_t cursor_theme_size;          // theme size the current cursors were made with
+} _sapp_wayland_t;
+
+// the registry the drag'n'drop and clipboard round-trips go through,
+// each offer holds one open fd while the data is streaming in
+typedef struct {
+    struct wl_data_offer* offer;        // the pending drag offer, 0 when not dragging
+    struct wl_data_source* source;      // the owned-clipboard source, 0 when foreign content
+    bool offer_has_uri_list;            // mime type check of the current drag offer
+} _sapp_wl_data_t;
+
+#if defined(_SAPP_EGL)
+typedef struct {
+    EGLDisplay display;
+    EGLContext context;
+    EGLSurface surface;
+} _sapp_egl_t;
+#endif // _SAPP_EGL
+
+#endif // _SAPP_X11 else _SAPP_WAYLAND
+
 #endif // _SAPP_LINUX
 
 #if defined(_SAPP_ANY_GL)
@@ -3343,12 +3442,22 @@ typedef struct {
         #endif
     #elif defined(_SAPP_ANDROID)
         _sapp_android_t android;
-    #elif defined(_SAPP_LINUX)
+    #else
+        #if defined(_SAPP_LINUX)
+            #if defined(_SAPP_X11)
         _sapp_x11_t x11;
         #if defined(_SAPP_GLX)
             _sapp_glx_t glx;
         #elif defined(_SAPP_EGL)
             _sapp_egl_t egl;
+        #endif
+            #else
+        _sapp_wayland_t wayland;
+        _sapp_wl_data_t wl_data;
+        #if defined(_SAPP_EGL)
+            _sapp_egl_t egl;
+        #endif
+            #endif
         #endif
     #endif
     #if defined(_SAPP_ANY_GL)
