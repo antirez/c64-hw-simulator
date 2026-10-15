@@ -3809,6 +3809,14 @@ _SOKOL_PRIVATE void _sapp_frame(void) {
     _sapp.frame_count++;
 }
 
+#if defined(_SAPP_WAYLAND)
+_SOKOL_PRIVATE void _sapp_wayland_key_event(sapp_event_type type, sapp_keycode key, bool repeat, uint32_t mods);
+_SOKOL_PRIVATE void _sapp_wayland_char_event(uint32_t chr, bool repeat, uint32_t mods);
+_SOKOL_PRIVATE void _sapp_wayland_mouse_event(sapp_event_type type, sapp_mousebutton btn, uint32_t mods);
+_SOKOL_PRIVATE void _sapp_wayland_scroll_event(float x, float y, uint32_t mods);
+_SOKOL_PRIVATE void _sapp_wayland_app_event(sapp_event_type type);
+#endif
+
 _SOKOL_PRIVATE bool _sapp_image_validate(const sapp_image_desc* desc) {
     SOKOL_ASSERT(desc->width > 0);
     SOKOL_ASSERT(desc->height > 0);
@@ -11519,6 +11527,8 @@ void ANativeActivity_onCreate(ANativeActivity* activity, void* saved_state, size
 // >>linux
 #if defined(_SAPP_LINUX)
 
+#if defined(_SAPP_X11)
+
 /* see GLFW's xkb_unicode.c */
 static const struct _sapp_x11_codepair {
   uint16_t keysym;
@@ -12753,6 +12763,8 @@ _SOKOL_PRIVATE void _sapp_x11_init_keytable(void) {
     XFree(keysyms);
 }
 
+#endif // _SAPP_X11
+
 _SOKOL_PRIVATE void _sapp_x11_query_system_dpi(void) {
     /* from GLFW:
 
@@ -13729,6 +13741,8 @@ _SOKOL_PRIVATE void _sapp_x11_char_event(uint32_t chr, bool repeat, uint32_t mod
     }
 }
 
+#if defined(_SAPP_X11)
+
 _SOKOL_PRIVATE sapp_keycode _sapp_x11_translate_key(int scancode) {
     if ((scancode >= 0) && (scancode < _SAPP_X11_MAX_X11_KEYCODES)) {
         return _sapp.keycodes[scancode];
@@ -13769,6 +13783,8 @@ _SOKOL_PRIVATE int32_t _sapp_x11_keysym_to_unicode(KeySym keysym) {
     /* No matching Unicode value found */
     return -1;
 }
+#endif // _SAPP_X11
+
 
 _SOKOL_PRIVATE bool _sapp_x11_keypress_repeat(int keycode) {
     bool repeat = false;
