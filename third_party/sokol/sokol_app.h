@@ -2607,6 +2607,9 @@ inline void sapp_run(const sapp_desc& desc) { return sapp_run(&desc); }
         #include "wayland/xdg-decoration-unstable-v1-client-protocol.h"
         #include <xkbcommon/xkbcommon.h>
         #include <wayland-cursor.h>
+        #include <sys/mman.h>   /* mmap the keymap fd */
+        #include <linux/input-event-codes.h> /* BTN_LEFT and friends */
+        #include <unistd.h>     /* pipe/read/write/close for the fd round-trips */
     #else
         #define GL_GLEXT_PROTOTYPES
         #include <X11/Xlib.h>
@@ -11555,7 +11558,81 @@ void ANativeActivity_onCreate(ANativeActivity* activity, void* saved_state, size
 // >>linux
 #if defined(_SAPP_LINUX)
 
+_SOKOL_PRIVATE bool _sapp_x11_parse_dropped_files_list(const char* src) {
+    SOKOL_ASSERT(src);
+    SOKOL_ASSERT(_sapp.drop.buffer);
+
+    _sapp_clear_drop_buffer();
+    _sapp.drop.num_files = 0;
+
+    /*
+        src is (potentially percent-encoded) string made of one or multiple paths
+        separated by \r\n, each path starting with 'file://'
+    */
+    bool err = false;
+    int src_count = 0;
+    char src_chr = 0;
+    char* dst_ptr = _sapp.drop.buffer;
+    const char* dst_end_ptr = dst_ptr + (_sapp.drop.max_path_length - 1); // room for terminating 0
+    while (0 != (src_chr = *src++)) {
+        src_count++;
+        char dst_chr = 0;
+        /* check leading 'file://' */
+        if (src_count <= 7) {
+            if (((src_count == 1) && (src_chr != 'f')) ||
+                ((src_count == 2) && (src_chr != 'i')) ||
+                ((src_count == 3) && (src_chr != 'l')) ||
+                ((src_count == 4) && (src_chr != 'e')) ||
+                ((src_count == 5) && (src_chr != ':')) ||
+                ((src_count == 6) && (src_chr != '/')) ||
+                ((src_count == 7) && (src_chr != '/')))
+            {
+                _SAPP_ERROR(LINUX_X11_DROPPED_FILE_URI_WRONG_SCHEME);
+                err = true;
+                break;
+            }
+        } else if (src_chr == '\r') {
+            // skip
+        } else if (src_chr == '\n') {
+            src_count = 0;
+            _sapp.drop.num_files++;
+            // too many files is not an error
+            if (_sapp.drop.num_files >= _sapp.drop.max_files) {
+                break;
+            }
+            dst_ptr = _sapp.drop.buffer + _sapp.drop.num_files * _sapp.drop.max_path_length;
+            dst_end_ptr = dst_ptr + (_sapp.drop.max_path_length - 1);
+        } else if ((src_chr == '%') && src[0] && src[1]) {
+            // a percent-encoded byte (most likely UTF-8 multibyte sequence)
+            const char digits[3] = { src[0], src[1], 0 };
+            src += 2;
+            dst_chr = (char) strtol(digits, 0, 16);
+        } else {
+            dst_chr = src_chr;
+        }
+        if (dst_chr) {
+            // dst_end_ptr already has adjustment for terminating zero
+            if (dst_ptr < dst_end_ptr) {
+                *dst_ptr++ = dst_chr;
+            } else {
+                _SAPP_ERROR(DROPPED_FILE_PATH_TOO_LONG);
+                err = true;
+                break;
+            }
+        }
+    }
+    if (err) {
+        _sapp_clear_drop_buffer();
+        _sapp.drop.num_files = 0;
+        return false;
+    } else {
+        return true;
+    }
+}
+
+
 #if defined(_SAPP_X11)
+
 
 /* see GLFW's xkb_unicode.c */
 static const struct _sapp_x11_codepair {
@@ -12793,6 +12870,7 @@ _SOKOL_PRIVATE void _sapp_x11_init_keytable(void) {
 
 #endif // _SAPP_X11
 
+#if defined(_SAPP_X11)
 _SOKOL_PRIVATE void _sapp_x11_query_system_dpi(void) {
     /* from GLFW:
 
@@ -12828,6 +12906,7 @@ _SOKOL_PRIVATE void _sapp_x11_query_system_dpi(void) {
         _SAPP_WARN(LINUX_X11_QUERY_SYSTEM_DPI_FAILED);
     }
 }
+#endif // _SAPP_X11
 
 #if defined(_SAPP_GLX)
 
@@ -13110,6 +13189,8 @@ _SOKOL_PRIVATE void _sapp_glx_swapinterval(int interval) {
 }
 
 #endif // _SAPP_GLX
+#if defined(_SAPP_X11)
+
 
 _SOKOL_PRIVATE void _sapp_x11_send_event(Atom type, int a, int b, int c, int d, int e) {
     _SAPP_STRUCT(XEvent, event);
@@ -13769,6 +13850,8 @@ _SOKOL_PRIVATE void _sapp_x11_char_event(uint32_t chr, bool repeat, uint32_t mod
     }
 }
 
+#endif // _SAPP_X11
+
 #if defined(_SAPP_X11)
 
 _SOKOL_PRIVATE sapp_keycode _sapp_x11_translate_key(int scancode) {
@@ -13826,78 +13909,6 @@ _SOKOL_PRIVATE bool _sapp_x11_keypress_repeat(int keycode) {
 _SOKOL_PRIVATE void _sapp_x11_keyrelease_repeat(int keycode) {
     if ((keycode >= 0) && (keycode < _SAPP_X11_MAX_X11_KEYCODES)) {
         _sapp.x11.key_repeat[keycode] = false;
-    }
-}
-
-_SOKOL_PRIVATE bool _sapp_x11_parse_dropped_files_list(const char* src) {
-    SOKOL_ASSERT(src);
-    SOKOL_ASSERT(_sapp.drop.buffer);
-
-    _sapp_clear_drop_buffer();
-    _sapp.drop.num_files = 0;
-
-    /*
-        src is (potentially percent-encoded) string made of one or multiple paths
-        separated by \r\n, each path starting with 'file://'
-    */
-    bool err = false;
-    int src_count = 0;
-    char src_chr = 0;
-    char* dst_ptr = _sapp.drop.buffer;
-    const char* dst_end_ptr = dst_ptr + (_sapp.drop.max_path_length - 1); // room for terminating 0
-    while (0 != (src_chr = *src++)) {
-        src_count++;
-        char dst_chr = 0;
-        /* check leading 'file://' */
-        if (src_count <= 7) {
-            if (((src_count == 1) && (src_chr != 'f')) ||
-                ((src_count == 2) && (src_chr != 'i')) ||
-                ((src_count == 3) && (src_chr != 'l')) ||
-                ((src_count == 4) && (src_chr != 'e')) ||
-                ((src_count == 5) && (src_chr != ':')) ||
-                ((src_count == 6) && (src_chr != '/')) ||
-                ((src_count == 7) && (src_chr != '/')))
-            {
-                _SAPP_ERROR(LINUX_X11_DROPPED_FILE_URI_WRONG_SCHEME);
-                err = true;
-                break;
-            }
-        } else if (src_chr == '\r') {
-            // skip
-        } else if (src_chr == '\n') {
-            src_count = 0;
-            _sapp.drop.num_files++;
-            // too many files is not an error
-            if (_sapp.drop.num_files >= _sapp.drop.max_files) {
-                break;
-            }
-            dst_ptr = _sapp.drop.buffer + _sapp.drop.num_files * _sapp.drop.max_path_length;
-            dst_end_ptr = dst_ptr + (_sapp.drop.max_path_length - 1);
-        } else if ((src_chr == '%') && src[0] && src[1]) {
-            // a percent-encoded byte (most likely UTF-8 multibyte sequence)
-            const char digits[3] = { src[0], src[1], 0 };
-            src += 2;
-            dst_chr = (char) strtol(digits, 0, 16);
-        } else {
-            dst_chr = src_chr;
-        }
-        if (dst_chr) {
-            // dst_end_ptr already has adjustment for terminating zero
-            if (dst_ptr < dst_end_ptr) {
-                *dst_ptr++ = dst_chr;
-            } else {
-                _SAPP_ERROR(DROPPED_FILE_PATH_TOO_LONG);
-                err = true;
-                break;
-            }
-        }
-    }
-    if (err) {
-        _sapp_clear_drop_buffer();
-        _sapp.drop.num_files = 0;
-        return false;
-    } else {
-        return true;
     }
 }
 
@@ -14521,6 +14532,17 @@ _SOKOL_PRIVATE void _sapp_wayland_init_keytable(void) {
 // protocol versions to bind; newer versions are fine, these are the floors
 #define _SAPP_WL_COMPOSITOR_MIN_VERSION (3)   // wl_surface_set_buffer_scale
 
+// the listeners are static structs defined below; forward declare for the
+// registry handler
+static const struct wl_registry_listener _sapp_wl_registry_listener;
+static const struct xdg_wm_base_listener _sapp_wl_wm_base_listener;
+static const struct wl_seat_listener _sapp_wl_seat_listener;
+static const struct wl_output_listener _sapp_wl_output_listener;
+_SOKOL_PRIVATE bool _sapp_x11_parse_dropped_files_list(const char* src);
+static const struct wl_data_offer_listener _sapp_wl_offer_listener;
+static const struct wl_data_device_listener _sapp_wl_device_listener;
+_SOKOL_PRIVATE void _sapp_wayland_maybe_get_data_device(void);
+
 _SOKOL_PRIVATE void _sapp_wayland_create_surface(void);
 _SOKOL_PRIVATE void _sapp_wayland_update_dimensions(int32_t width, int32_t height);
 
@@ -14576,7 +14598,7 @@ static const struct xdg_wm_base_listener _sapp_wl_wm_base_listener = {
 };
 
 
-_SOKOL_PRIVATE void _sapp_wl_output_geometry(void* data, struct wl_output* output, int32_t x, int32_t y, int32_t physical_width, int32_t physical_height, int32_t subpixel, int32_t make, const char* model, int32_t transform) {
+_SOKOL_PRIVATE void _sapp_wl_output_geometry(void* data, struct wl_output* output, int32_t x, int32_t y, int32_t physical_width, int32_t physical_height, int32_t subpixel, const char* make, const char* model, int32_t transform) {
     _SOKOL_UNUSED(data); _SOKOL_UNUSED(output); _SOKOL_UNUSED(x); _SOKOL_UNUSED(y);
     _SOKOL_UNUSED(physical_width); _SOKOL_UNUSED(physical_height); _SOKOL_UNUSED(subpixel);
     _SOKOL_UNUSED(make); _SOKOL_UNUSED(model); _SOKOL_UNUSED(transform);
@@ -14670,8 +14692,8 @@ _SOKOL_PRIVATE void _sapp_wl_keyboard_enter(void* data, struct wl_keyboard* keyb
     _sapp_wayland_app_event(SAPP_EVENTTYPE_FOCUSED);
 }
 
-_SOKOL_PRIVATE void _sapp_wl_keyboard_leave(void* data, struct wl_keyboard* keyboard, uint32_t serial) {
-    _SOKOL_UNUSED(data); _SOKOL_UNUSED(keyboard); _SOKOL_UNUSED(serial);
+_SOKOL_PRIVATE void _sapp_wl_keyboard_leave(void* data, struct wl_keyboard* keyboard, uint32_t serial, struct wl_surface* surface) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(keyboard); _SOKOL_UNUSED(serial); _SOKOL_UNUSED(surface);
     // pressed keys that leave with the window would otherwise stick down
     _sapp_wayland_app_event(SAPP_EVENTTYPE_UNFOCUSED);
 }
@@ -14819,6 +14841,11 @@ _SOKOL_PRIVATE void _sapp_wl_pointer_axis_stop(void* data, struct wl_pointer* po
 _SOKOL_PRIVATE void _sapp_wl_pointer_axis_discrete(void* data, struct wl_pointer* pointer, uint32_t axis, int32_t discrete) {
     _SOKOL_UNUSED(data); _SOKOL_UNUSED(pointer); _SOKOL_UNUSED(axis); _SOKOL_UNUSED(discrete);
 }
+_SOKOL_PRIVATE void _sapp_wl_pointer_axis_value120(void* data, struct wl_pointer* pointer, uint32_t axis, int32_t value120) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(pointer); _SOKOL_UNUSED(axis); _SOKOL_UNUSED(value120);
+    /* wheel steps also accumulate as axis values; the frame handler turns
+     * the accumulated value into the scroll event */
+}
 _SOKOL_PRIVATE void _sapp_wl_pointer_axis_relative_direction(void* data, struct wl_pointer* pointer, uint32_t axis, uint32_t direction) {
     _SOKOL_UNUSED(data); _SOKOL_UNUSED(pointer); _SOKOL_UNUSED(axis); _SOKOL_UNUSED(direction);
 }
@@ -14833,6 +14860,7 @@ static const struct wl_pointer_listener _sapp_wl_pointer_listener = {
     _sapp_wl_pointer_axis_source,
     _sapp_wl_pointer_axis_stop,
     _sapp_wl_pointer_axis_discrete,
+    _sapp_wl_pointer_axis_value120,
     _sapp_wl_pointer_axis_relative_direction,
 };
 
@@ -14874,38 +14902,6 @@ _SOKOL_PRIVATE void _sapp_wayland_maybe_get_data_device(void) {
 // -- xdg surface / toplevel --
 
 _SOKOL_PRIVATE bool _sapp_wl_state_maximized(uint32_t state) { return state == XDG_TOPLEVEL_STATE_MAXIMIZED; }
-
-_SOKOL_PRIVATE void _sapp_wl_toplevel_configure(void* data, struct xdg_toplevel* toplevel, int32_t width, int32_t height, struct wl_array* states) {
-    _SOKOL_UNUSED(data); _SOKOL_UNUSED(toplevel);
-    // fullscreen state change requests ride the same configure round-trip
-    uint32_t* s;
-    bool wants_fullscreen = false;
-    wl_array_for_each(s, states) {
-        if ((*s == XDG_TOPLEVEL_STATE_FULLSCREEN) || _sapp_wl_state_maximized(*s)) {
-            wants_fullscreen = (*s == XDG_TOPLEVEL_STATE_FULLSCREEN);
-        }
-    }
-    _sapp.fullscreen = wants_fullscreen;
-    // width/height 0 means "you decide", keep the current size
-    if (width > 0 && height > 0) {
-        _sapp.wayland.new_width = width;
-        _sapp.wayland.new_height = height;
-        _sapp.wayland.resize_pending = true;
-    }
-}
-
-_SOKOL_PRIVATE void _sapp_wl_toplevel_close(void* data, struct xdg_toplevel* toplevel) {
-    _SOKOL_UNUSED(data); _SOKOL_UNUSED(toplevel);
-    _sapp.quit_requested = true;
-}
-
-_SOKOL_PRIVATE void _sapp_wl_toplevel_configure_bounds(void* data, struct xdg_toplevel* toplevel, int32_t width, int32_t height) {
-    _SOKOL_UNUSED(data); _SOKOL_UNUSED(toplevel); _SOKOL_UNUSED(width); _SOKOL_UNUSED(height);
-}
-
-_SOKOL_PRIVATE void _sapp_wl_toplevel_wm_capabilities(void* data, struct xdg_toplevel* toplevel, struct wl_array* capabilities) {
-    _SOKOL_UNUSED(data); _SOKOL_UNUSED(toplevel); _SOKOL_UNUSED(capabilities);
-}
 
 _SOKOL_PRIVATE void _sapp_wl_toplevel_configure(void* data, struct xdg_toplevel* toplevel, int32_t width, int32_t height, struct wl_array* states) {
     _SOKOL_UNUSED(data); _SOKOL_UNUSED(toplevel);
@@ -15121,6 +15117,7 @@ _SOKOL_PRIVATE void _sapp_wl_device_selection(void* data, struct wl_data_device*
 
 
 static const struct wl_data_device_listener _sapp_wl_device_listener = {
+    _sapp_wl_device_data_offer,
     _sapp_wl_device_enter,
     _sapp_wl_device_leave,
     _sapp_wl_device_motion,
@@ -15169,7 +15166,7 @@ _SOKOL_PRIVATE void _sapp_wayland_ensure_cursor_theme(void) {
     const char* size_env = getenv("XCURSOR_SIZE");
     int size = size_env ? atoi(size_env) : 24;
     size *= _sapp.wayland.output_scale;
-    _sapp.wayland.cursor_theme = wl_cursor_theme_load(name, size, _sapp.wl_shm);
+    _sapp.wayland.cursor_theme = wl_cursor_theme_load(name, size, _sapp.wayland.shm);
     _sapp.wayland.cursor_theme_size = _sapp_wl_cursor_size();
 }
 
@@ -15370,6 +15367,18 @@ _SOKOL_PRIVATE void _sapp_wayland_update_cursor(sapp_mouse_cursor cursor, bool s
     _sapp_wayland_set_pointer_cursor();
 }
 
+_SOKOL_PRIVATE void _sapp_wayland_toggle_fullscreen(void) {
+    if (!_sapp.wayland.toplevel) {
+        return;
+    }
+    _sapp.fullscreen = !_sapp.fullscreen;
+    if (_sapp.fullscreen) {
+        xdg_toplevel_set_fullscreen(_sapp.wayland.toplevel, 0);
+    } else {
+        xdg_toplevel_unset_fullscreen(_sapp.wayland.toplevel);
+    }
+}
+
 _SOKOL_PRIVATE void _sapp_wayland_lock_mouse(bool lock) {
     /* pointer confinement needs the pointer-constraints protocol and a
      * re-dispatch round trip; nothing in this app locks the mouse */
@@ -15412,13 +15421,33 @@ _SOKOL_PRIVATE int32_t _sapp_wl_window_dev_height(void) {
     return _sapp.wayland.configured_height > 0 ? _sapp.wayland.configured_height : _sapp.desc.height;
 }
 
+_SOKOL_PRIVATE void _sapp_wayland_update_dimensions(int32_t width, int32_t height) {
+    SOKOL_ASSERT(width > 0 && height > 0);
+    const float scale = (float) _sapp.wayland.output_scale;
+    _sapp.framebuffer_width = _sapp_roundf_gzero((float) width);
+    _sapp.framebuffer_height = _sapp_roundf_gzero((float) height);
+    _sapp.window_width = _sapp_roundf_gzero((float) width / scale);
+    _sapp.window_height = _sapp_roundf_gzero((float) height / scale);
+    if (scale != _sapp.dpi_scale) {
+        _sapp.dpi_scale = scale;
+        // nuklear bakes its font at the dpi scale; the UI picks it up on rebuild
+    }
+    if (!_sapp.first_frame && _sapp_events_enabled()) {
+        /* RESIZED rides with the configure event; fired from commit_frame */
+    }
+}
+
 _SOKOL_PRIVATE void _sapp_wayland_commit_frame(void) {
     // resize first, then ack, then draw: everything rides one round-trip
     if (_sapp.wayland.resize_pending) {
+        const int old_w = _sapp.framebuffer_width, old_h = _sapp.framebuffer_height;
         _sapp_wayland_update_dimensions(_sapp.wayland.new_width, _sapp.wayland.new_height);
         _sapp.wayland.configured_width = _sapp.wayland.new_width;
         _sapp.wayland.configured_height = _sapp.wayland.new_height;
         _sapp.wayland.resize_pending = false;
+        if ((old_w != _sapp.framebuffer_width || old_h != _sapp.framebuffer_height) && !_sapp.first_frame) {
+            _sapp_wayland_app_event(SAPP_EVENTTYPE_RESIZED);
+        }
     }
     if (_sapp.wayland.pending_ack && _sapp.wayland.have_configure_serial) {
         xdg_surface_ack_configure(_sapp.wayland.xdg_surface, _sapp.wayland.configure_serial);
@@ -15609,6 +15638,8 @@ _SOKOL_PRIVATE void _sapp_linux_frame(void) {
     #endif
 }
 #endif // _SAPP_X11
+
+#if defined(_SAPP_X11)
 
 _SOKOL_PRIVATE void _sapp_x11_run(const sapp_desc* desc) {
     /* The following lines are here to trigger a linker error instead of an
