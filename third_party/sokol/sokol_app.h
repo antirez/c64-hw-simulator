@@ -15386,13 +15386,16 @@ _SOKOL_PRIVATE void _sapp_wayland_app_event(sapp_event_type type) {
 // -- the frame loop --
 
 // the frame callback queue: one pending wl_callback per commit
-_SOKOL_PRIVATE int _sapp_wl_frame_cb_done;
+#define _SAPP_WL_FRAME_TIMEOUT_MS (100)
+_SOKOL_PRIVATE int _sapp_wl_frame_cb_done;      // callbacks delivered
+_SOKOL_PRIVATE int _sapp_wl_frame_cb_armed;     // a callback is queued
 static const struct wl_callback_listener _sapp_wl_frame_callback_listener;
 
 _SOKOL_PRIVATE void _sapp_wl_frame_done(void* data, struct wl_callback* callback, uint32_t time) {
     _SOKOL_UNUSED(data); _SOKOL_UNUSED(time);
     wl_callback_destroy(callback);
     _sapp_wl_frame_cb_done++;
+    _sapp_wl_frame_cb_armed--;
 }
 
 static const struct wl_callback_listener _sapp_wl_frame_callback_listener = {
@@ -15425,6 +15428,7 @@ _SOKOL_PRIVATE void _sapp_wayland_commit_frame(void) {
     struct wl_callback* cb = wl_surface_frame(_sapp.wayland.surface);
     if (cb) {
         wl_callback_add_listener(cb, &_sapp_wl_frame_callback_listener, 0);
+        _sapp_wl_frame_cb_armed++;
     }
 }
 
@@ -15483,7 +15487,28 @@ _SOKOL_PRIVATE void _sapp_wayland_run(const sapp_desc* desc) {
         wl_display_read_events(_sapp.wayland.display);
         wl_display_dispatch_pending(_sapp.wayland.display);
 
+        // vsync pacing: when a callback is armed, give the compositor a
+        // chance to deliver it before drawing the next frame
+        const int armed = _sapp_wl_frame_cb_armed;
         _sapp_wayland_commit_frame();
+        if (armed && !_sapp.desc.disable_vsync) {
+            const int seen = _sapp_wl_frame_cb_done;
+            while (seen == _sapp_wl_frame_cb_done) {
+                struct pollfd fd = { wl_display_get_fd(_sapp.wayland.display), POLLIN, 0 };
+                poll(&fd, 1, _SAPP_WL_FRAME_TIMEOUT_MS);
+                if (wl_display_prepare_read(_sapp.wayland.display) != 0) {
+                    wl_display_dispatch_pending(_sapp.wayland.display);
+                    continue;
+                }
+                wl_display_flush(_sapp.wayland.display);
+                if (poll(&fd, 1, _SAPP_WL_FRAME_TIMEOUT_MS) <= 0) {
+                    wl_display_cancel_read(_sapp.wayland.display);
+                    break;
+                }
+                wl_display_read_events(_sapp.wayland.display);
+                wl_display_dispatch_pending(_sapp.wayland.display);
+            }
+        }
         _sapp_frame();
         #if defined(_SAPP_EGL)
             eglSwapBuffers(_sapp.egl.display, _sapp.egl.surface);
