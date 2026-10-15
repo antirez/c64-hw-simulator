@@ -4098,7 +4098,7 @@ _SOKOL_PRIVATE void _sapp_wgpu_create_swapchain(bool called_from_resize) {
             from_hwnd.hinstance = GetModuleHandleW(NULL);
             from_hwnd.hwnd = _sapp.win32.hwnd;
             surf_desc.nextInChain = &from_hwnd.chain;
-        #elif defined(_SAPP_LINUX)
+        #elif defined(_SAPP_LINUX) && defined(_SAPP_X11)
             _SAPP_STRUCT(WGPUSurfaceSourceXlibWindow, from_xlib);
             from_xlib.chain.sType = WGPUSType_SurfaceSourceXlibWindow;
             from_xlib.display = _sapp.x11.display;
@@ -4867,12 +4867,18 @@ _SOKOL_PRIVATE void _sapp_vk_create_surface(void) {
     SOKOL_ASSERT(0 == _sapp.vk.surface);
     VkResult res = VK_SUCCESS;
 
-    #if defined(_SAPP_LINUX)
+    #if defined(_SAPP_LINUX) && defined(_SAPP_X11)
         _SAPP_STRUCT(VkXlibSurfaceCreateInfoKHR, xlib_info);
         xlib_info.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
         xlib_info.dpy = _sapp.x11.display;
         xlib_info.window = _sapp.x11.window;
         res = vkCreateXlibSurfaceKHR(_sapp.vk.instance, &xlib_info, 0, &_sapp.vk.surface);
+    #elif defined(_SAPP_LINUX)
+        _SAPP_STRUCT(VkWaylandSurfaceCreateInfoKHR, wl_info);
+        wl_info.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
+        wl_info.display = _sapp.wayland.display;
+        wl_info.surface = _sapp.wayland.surface;
+        res = vkCreateWaylandSurfaceKHR(_sapp.vk.instance, &wl_info, 0, &_sapp.vk.surface);
     #elif defined(_SAPP_WIN32)
         _SAPP_STRUCT(VkWin32SurfaceCreateInfoKHR, win32_info);
         win32_info.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
@@ -5282,8 +5288,11 @@ _SOKOL_PRIVATE void _sapp_vk_create_swapchain(void) {
     _sapp.vk.swapchain_valid = true;
 }
 
-#if defined(_SAPP_LINUX)
+#if defined(_SAPP_LINUX) && defined(_SAPP_X11)
 _SOKOL_PRIVATE void _sapp_x11_app_event(sapp_event_type type);
+#endif
+#if defined(_SAPP_LINUX) && defined(_SAPP_WAYLAND)
+_SOKOL_PRIVATE void _sapp_wayland_app_event(sapp_event_type type);
 #endif
 #if defined(_SAPP_WIN32)
 _SOKOL_PRIVATE void _sapp_win32_app_event(sapp_event_type type);
@@ -5297,8 +5306,11 @@ _SOKOL_PRIVATE void _sapp_vk_recreate_swapchain(void) {
     _sapp_vk_create_swapchain();
     if ((fb_width != _sapp.framebuffer_width) || (fb_height != _sapp.framebuffer_height)) {
         if (_sapp.vk.swapchain_valid && !_sapp.first_frame) {
-            #if defined(_SAPP_LINUX)
+            #if defined(_SAPP_LINUX) && defined(_SAPP_X11)
             _sapp_x11_app_event(SAPP_EVENTTYPE_RESIZED);
+            #endif
+            #if defined(_SAPP_LINUX) && defined(_SAPP_WAYLAND)
+            _sapp_wayland_app_event(SAPP_EVENTTYPE_RESIZED);
             #endif
             #if defined(_SAPP_WIN32)
             _sapp_win32_app_event(SAPP_EVENTTYPE_RESIZED);
@@ -14724,8 +14736,10 @@ SOKOL_API_IMPL void sapp_toggle_fullscreen(void) {
     _sapp_macos_toggle_fullscreen();
     #elif defined(_SAPP_WIN32)
     _sapp_win32_toggle_fullscreen();
-    #elif defined(_SAPP_LINUX)
+    #elif defined(_SAPP_LINUX) && defined(_SAPP_X11)
     _sapp_x11_toggle_fullscreen();
+    #elif defined(_SAPP_LINUX)
+    _sapp_wayland_toggle_fullscreen();
     #elif defined(_SAPP_EMSCRIPTEN)
     _sapp_emsc_toggle_fullscreen();
     #endif
@@ -14736,8 +14750,10 @@ _SOKOL_PRIVATE void _sapp_update_cursor(sapp_mouse_cursor cursor, bool shown) {
     _sapp_macos_update_cursor(cursor, shown);
     #elif defined(_SAPP_WIN32)
     _sapp_win32_update_cursor(cursor, shown, false);
-    #elif defined(_SAPP_LINUX)
+    #elif defined(_SAPP_LINUX) && defined(_SAPP_X11)
     _sapp_x11_update_cursor(cursor, shown);
+    #elif defined(_SAPP_LINUX)
+    _sapp_wayland_update_cursor(cursor, shown);
     #elif defined(_SAPP_EMSCRIPTEN)
     _sapp_emsc_update_cursor(cursor, shown);
     #endif
@@ -14763,8 +14779,10 @@ SOKOL_API_IMPL void sapp_lock_mouse(bool lock) {
     _sapp_emsc_lock_mouse(lock);
     #elif defined(_SAPP_WIN32)
     _sapp_win32_lock_mouse(lock);
-    #elif defined(_SAPP_LINUX)
+    #elif defined(_SAPP_LINUX) && defined(_SAPP_X11)
     _sapp_x11_lock_mouse(lock);
+    #elif defined(_SAPP_LINUX)
+    _sapp_wayland_lock_mouse(lock);
     #else
     _sapp.mouse.locked = lock;
     #endif
@@ -14804,7 +14822,7 @@ SOKOL_API_IMPL sapp_mouse_cursor sapp_bind_mouse_cursor_image(sapp_mouse_cursor 
     res = _sapp_emsc_make_custom_mouse_cursor(cursor, desc);
     #elif defined(_SAPP_WIN32)
     res = _sapp_win32_make_custom_mouse_cursor(cursor, desc);
-    #elif defined(_SAPP_LINUX)
+    #elif defined(_SAPP_LINUX) && defined(_SAPP_X11)
     res = _sapp_x11_make_custom_mouse_cursor(cursor, desc);
     #else
     _SOKOL_UNUSED(desc);
@@ -14834,7 +14852,7 @@ SOKOL_API_IMPL void sapp_unbind_mouse_cursor_image(sapp_mouse_cursor cursor) {
         _sapp_emsc_destroy_custom_mouse_cursor(cursor);
         #elif defined(_SAPP_WIN32)
         _sapp_win32_destroy_custom_mouse_cursor(cursor);
-        #elif defined(_SAPP_LINUX)
+        #elif defined(_SAPP_LINUX) && defined(_SAPP_X11)
         _sapp_x11_destroy_custom_mouse_cursor(cursor);
         #endif
     }
@@ -14868,8 +14886,10 @@ SOKOL_API_IMPL void sapp_set_clipboard_string(const char* str) {
         _sapp_emsc_set_clipboard_string(str);
     #elif defined(_SAPP_WIN32)
         _sapp_win32_set_clipboard_string(str);
-    #elif defined(_SAPP_LINUX)
+    #elif defined(_SAPP_LINUX) && defined(_SAPP_X11)
         _sapp_x11_set_clipboard_string(str);
+    #elif defined(_SAPP_LINUX)
+        _sapp_wayland_set_clipboard_string(str);
     #else
         /* not implemented */
     #endif
@@ -14886,8 +14906,10 @@ SOKOL_API_IMPL const char* sapp_get_clipboard_string(void) {
         return _sapp.clipboard.buffer;
     #elif defined(_SAPP_WIN32)
         return _sapp_win32_get_clipboard_string();
-    #elif defined(_SAPP_LINUX)
+    #elif defined(_SAPP_LINUX) && defined(_SAPP_X11)
         return _sapp_x11_get_clipboard_string();
+    #elif defined(_SAPP_LINUX)
+        return _sapp_wayland_get_clipboard_string();
     #else
         /* not implemented */
         return _sapp.clipboard.buffer;
@@ -14901,8 +14923,10 @@ SOKOL_API_IMPL void sapp_set_window_title(const char* title) {
         _sapp_macos_update_window_title();
     #elif defined(_SAPP_WIN32)
         _sapp_win32_update_window_title();
-    #elif defined(_SAPP_LINUX)
+    #elif defined(_SAPP_LINUX) && defined(_SAPP_X11)
         _sapp_x11_update_window_title();
+    #elif defined(_SAPP_LINUX)
+        _sapp_wayland_update_window_title();
     #endif
 }
 
@@ -14927,10 +14951,12 @@ SOKOL_API_IMPL void sapp_set_icon(const sapp_icon_desc* desc) {
         _sapp_macos_set_icon(desc, num_images);
     #elif defined(_SAPP_WIN32)
         _sapp_win32_set_icon(desc, num_images);
-    #elif defined(_SAPP_LINUX)
+    #elif defined(_SAPP_LINUX) && defined(_SAPP_X11)
         _sapp_x11_set_icon(desc, num_images);
     #elif defined(_SAPP_EMSCRIPTEN)
         _sapp_emsc_set_icon(desc, num_images);
+    #else
+        /* Wayland: nothing to do, toplevels have no icons */
     #endif
 }
 
@@ -15168,7 +15194,7 @@ SOKOL_API_IMPL bool sapp_gl_is_gles(void) {
 }
 
 SOKOL_API_IMPL const void* sapp_x11_get_window(void) {
-    #if defined(_SAPP_LINUX)
+    #if defined(_SAPP_LINUX) && defined(_SAPP_X11)
         return (void*)_sapp.x11.window;
     #else
         return 0;
@@ -15176,7 +15202,7 @@ SOKOL_API_IMPL const void* sapp_x11_get_window(void) {
 }
 
 SOKOL_API_IMPL const void* sapp_x11_get_display(void) {
-    #if defined(_SAPP_LINUX)
+    #if defined(_SAPP_LINUX) && defined(_SAPP_X11)
         return (void*)_sapp.x11.display;
     #else
         return 0;
