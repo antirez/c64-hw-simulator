@@ -13807,7 +13807,7 @@ _SOKOL_PRIVATE int32_t _sapp_x11_keysym_to_unicode(KeySym keysym) {
 }
 #endif // _SAPP_X11
 
-
+#if defined(_SAPP_X11)
 _SOKOL_PRIVATE bool _sapp_x11_keypress_repeat(int keycode) {
     bool repeat = false;
     if ((keycode >= 0) && (keycode < _SAPP_X11_MAX_X11_KEYCODES)) {
@@ -14250,6 +14250,7 @@ _SOKOL_PRIVATE void _sapp_x11_process_event(XEvent* event) {
             break;
     }
 }
+#endif // _SAPP_X11
 
 #if defined(_SAPP_EGL)
 
