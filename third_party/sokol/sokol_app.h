@@ -14253,6 +14253,10 @@ _SOKOL_PRIVATE void _sapp_x11_process_event(XEvent* event) {
 
 #if defined(_SAPP_EGL)
 
+#if defined(_SAPP_X11)
+_SOKOL_PRIVATE void _sapp_x11_create_window(Visual* visual_or_null, int depth);
+#endif
+
 _SOKOL_PRIVATE void _sapp_egl_init(void) {
     #if defined(SOKOL_GLCORE)
         if (!eglBindAPI(EGL_OPENGL_API)) {
@@ -14264,7 +14268,13 @@ _SOKOL_PRIVATE void _sapp_egl_init(void) {
         }
     #endif
 
-    _sapp.egl.display = eglGetDisplay((EGLNativeDisplayType)_sapp.x11.display);
+    _sapp.egl.display = eglGetDisplay(
+        #if defined(_SAPP_WAYLAND)
+            (EGLNativeDisplayType)0
+        #else
+            (EGLNativeDisplayType)_sapp.x11.display
+        #endif
+    );
     if (EGL_NO_DISPLAY == _sapp.egl.display) {
         _SAPP_PANIC(LINUX_EGL_GET_DISPLAY_FAILED);
     }
@@ -14337,6 +14347,9 @@ _SOKOL_PRIVATE void _sapp_egl_init(void) {
         _SAPP_PANIC(LINUX_EGL_NO_NATIVE_VISUAL);
     }
 
+    #if defined(_SAPP_WAYLAND)
+        _SOKOL_UNUSED(visual_id);
+    #else
     _SAPP_STRUCT(XVisualInfo, visual_info_template);
     visual_info_template.visualid = (VisualID)visual_id;
 
@@ -14348,13 +14361,18 @@ _SOKOL_PRIVATE void _sapp_egl_init(void) {
 
     _sapp_x11_create_window(visual_info->visual, visual_info->depth);
     XFree(visual_info);
+    #endif
 
     EGLint srgb_surface_attribs[] = {
         EGL_GL_COLORSPACE, EGL_GL_COLORSPACE_SRGB,
         EGL_NONE,
     };
     const EGLint* surf_attrs = wants_srgb ? srgb_surface_attribs : 0;
-    _sapp.egl.surface = eglCreateWindowSurface(_sapp.egl.display, config, (EGLNativeWindowType)_sapp.x11.window, surf_attrs);
+    #if defined(_SAPP_WAYLAND)
+        _sapp.egl.surface = eglCreateWindowSurface(_sapp.egl.display, config, (EGLNativeWindowType)_sapp.wayland.surface, surf_attrs);
+    #else
+        _sapp.egl.surface = eglCreateWindowSurface(_sapp.egl.display, config, (EGLNativeWindowType)_sapp.x11.window, surf_attrs);
+    #endif
     if (EGL_NO_SURFACE == _sapp.egl.surface) {
         _SAPP_PANIC(LINUX_EGL_CREATE_WINDOW_SURFACE_FAILED);
     }
