@@ -360,6 +360,11 @@
             Display has been cast to a void pointer in order to be tunneled
             through code which doesn't include X11/Xlib.h.
 
+        const void* sapp_wayland_get_display(void)
+            On Linux with the Wayland backend, get the wl_display and
+            wl_surface as void pointers, otherwise a null pointer. Same
+            void-pointer tunneling trick as above.
+
         const void* sapp_wgpu_get_device(void)
         const void* sapp_wgpu_get_render_view(void)
         const void* sapp_wgpu_get_resolve_view(void)
@@ -2299,6 +2304,11 @@ SOKOL_APP_API_DECL bool sapp_gl_is_gles(void);
 SOKOL_APP_API_DECL const void* sapp_x11_get_window(void);
 /* X11: get Display */
 SOKOL_APP_API_DECL const void* sapp_x11_get_display(void);
+
+/* Wayland: get the native display* */
+SOKOL_APP_API_DECL const void* sapp_wayland_get_display(void);
+/* Wayland: get the native surface* */
+SOKOL_APP_API_DECL const void* sapp_wayland_get_surface(void);
 
 /* Android: get native activity handle */
 SOKOL_APP_API_DECL const void* sapp_android_get_native_activity(void);
@@ -15204,6 +15214,22 @@ SOKOL_API_IMPL const void* sapp_x11_get_window(void) {
 SOKOL_API_IMPL const void* sapp_x11_get_display(void) {
     #if defined(_SAPP_LINUX) && defined(_SAPP_X11)
         return (void*)_sapp.x11.display;
+    #else
+        return 0;
+    #endif
+}
+
+SOKOL_API_IMPL const void* sapp_wayland_get_display(void) {
+    #if defined(_SAPP_LINUX) && defined(_SAPP_WAYLAND)
+        return (void*)_sapp.wayland.display;
+    #else
+        return 0;
+    #endif
+}
+
+SOKOL_API_IMPL const void* sapp_wayland_get_surface(void) {
+    #if defined(_SAPP_LINUX) && defined(_SAPP_WAYLAND)
+        return (void*)_sapp.wayland.surface;
     #else
         return 0;
     #endif
