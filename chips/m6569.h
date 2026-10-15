@@ -4,6 +4,10 @@
 
     MOS Technology 6569 emulator (aka VIC-II for PAL-B)
 
+    ALTERED VERSION, modified for c64-hw-sim: the tick can also run in two
+    halves, m6569_tick_fetch() and m6569_tick_finish() (see below). This is
+    not the original file by Andre Weissflog.
+
     Do this:
     ~~~C
     #define CHIPS_IMPL

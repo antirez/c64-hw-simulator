@@ -1,0 +1,31 @@
+Copyright (c) 2026 Salvatore Sanfilippo <antirez@gmail.com>
+
+This software is provided 'as-is', without any express or implied
+warranty. In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+   claim that you wrote the original software. If you use this software
+   in a product, an acknowledgment in the product documentation would be
+   appreciated but is not required.
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+3. This notice may not be removed or altered from any source distribution.
+
+---
+
+Parts of this repository come from others and keep their own licenses:
+
+- chips/*.h: Andre Weissflog's chips emulators, zlib license (the notice
+  is in each file). chips/m6569.h is an altered version, marked as such.
+- chips/c64-roms.h: images of the Commodore 64 ROMs (BASIC, KERNAL,
+  character generator). They belong to their copyright holders and are
+  not covered by this license.
+- third_party/sokol: zlib license. third_party/nuklear: MIT or public
+  domain, at your choice (see the end of nuklear.h).
+- src/board_data.c: generated from bwack's C64-250407-Replica-KiCad,
+  licensed under the CERN OHL v1.2.
