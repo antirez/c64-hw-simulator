@@ -14425,6 +14425,93 @@ _SOKOL_PRIVATE void _sapp_egl_destroy(void) {
 
 #endif // _SAPP_EGL
 
+#if defined(_SAPP_WAYLAND)
+
+/* the Wayland backend: window through xdg-shell, GL through EGL, input
+ * through wl_seat. The frame loop is wl_display_dispatch: wayland rounds
+ * are its frame boundary the way XPending is for X11. */
+
+// keycode -> sapp_keycode for the KEY_ ranges that are the same on both
+// sides (evdev starts at 8, and 8..0xFF map 1:1 in sokol-app's layout
+// table); the rest is picked off in _sapp_wayland_translate_key()
+_SOKOL_PRIVATE sapp_keycode _sapp_wayland_translate_key(uint32_t keycode) {
+    if (keycode < SAPP_MAX_KEYCODES) {
+        return _sapp.keycodes[keycode];
+    }
+    return SAPP_KEYCODE_INVALID;
+}
+
+// layout-independent key location table, the evdev equivalent of the X11
+// keyname table in _sapp_x11_init_keytable()
+_SOKOL_PRIVATE void _sapp_wayland_init_keytable(void) {
+    for (int i = 0; i < SAPP_MAX_KEYCODES; i++) {
+        _sapp.keycodes[i] = SAPP_KEYCODE_INVALID;
+    }
+    // the evdev keycodes are the physical key locations, exactly what
+    // GLFW's XKB named keys give on X11; table straight from
+    // linux/input-event-codes.h
+    static const struct { uint32_t code; sapp_keycode key; } keymap[] = {
+        { 1, SAPP_KEYCODE_ESCAPE }, { 2, SAPP_KEYCODE_1 }, { 3, SAPP_KEYCODE_2 },
+        { 4, SAPP_KEYCODE_3 }, { 5, SAPP_KEYCODE_4 }, { 6, SAPP_KEYCODE_5 },
+        { 7, SAPP_KEYCODE_6 }, { 8, SAPP_KEYCODE_7 }, { 9, SAPP_KEYCODE_8 },
+        { 10, SAPP_KEYCODE_9 }, { 11, SAPP_KEYCODE_0 },
+        { 12, SAPP_KEYCODE_MINUS }, { 13, SAPP_KEYCODE_EQUAL },
+        { 14, SAPP_KEYCODE_BACKSPACE }, { 15, SAPP_KEYCODE_TAB },
+        { 16, SAPP_KEYCODE_Q }, { 17, SAPP_KEYCODE_W }, { 18, SAPP_KEYCODE_E },
+        { 19, SAPP_KEYCODE_R }, { 20, SAPP_KEYCODE_T }, { 21, SAPP_KEYCODE_Y },
+        { 22, SAPP_KEYCODE_U }, { 23, SAPP_KEYCODE_I }, { 24, SAPP_KEYCODE_O },
+        { 25, SAPP_KEYCODE_P }, { 26, SAPP_KEYCODE_LEFT_BRACKET },
+        { 27, SAPP_KEYCODE_RIGHT_BRACKET }, { 28, SAPP_KEYCODE_ENTER },
+        { 29, SAPP_KEYCODE_LEFT_CONTROL }, { 30, SAPP_KEYCODE_A },
+        { 31, SAPP_KEYCODE_S }, { 32, SAPP_KEYCODE_D }, { 33, SAPP_KEYCODE_F },
+        { 34, SAPP_KEYCODE_G }, { 35, SAPP_KEYCODE_H }, { 36, SAPP_KEYCODE_J },
+        { 37, SAPP_KEYCODE_K }, { 38, SAPP_KEYCODE_L },
+        { 39, SAPP_KEYCODE_SEMICOLON }, { 40, SAPP_KEYCODE_APOSTROPHE },
+        { 41, SAPP_KEYCODE_GRAVE_ACCENT }, { 42, SAPP_KEYCODE_LEFT_SHIFT },
+        { 43, SAPP_KEYCODE_BACKSLASH }, { 44, SAPP_KEYCODE_Z },
+        { 45, SAPP_KEYCODE_X }, { 46, SAPP_KEYCODE_C }, { 47, SAPP_KEYCODE_V },
+        { 48, SAPP_KEYCODE_B }, { 49, SAPP_KEYCODE_N }, { 50, SAPP_KEYCODE_M },
+        { 51, SAPP_KEYCODE_COMMA }, { 52, SAPP_KEYCODE_PERIOD },
+        { 53, SAPP_KEYCODE_SLASH }, { 54, SAPP_KEYCODE_RIGHT_SHIFT },
+        { 55, SAPP_KEYCODE_KP_MULTIPLY }, { 56, SAPP_KEYCODE_LEFT_ALT },
+        { 57, SAPP_KEYCODE_SPACE }, { 58, SAPP_KEYCODE_CAPS_LOCK },
+        { 59, SAPP_KEYCODE_F1 }, { 60, SAPP_KEYCODE_F2 }, { 61, SAPP_KEYCODE_F3 },
+        { 62, SAPP_KEYCODE_F4 }, { 63, SAPP_KEYCODE_F5 }, { 64, SAPP_KEYCODE_F6 },
+        { 65, SAPP_KEYCODE_F7 }, { 66, SAPP_KEYCODE_F8 }, { 67, SAPP_KEYCODE_F9 },
+        { 68, SAPP_KEYCODE_F10 }, { 69, SAPP_KEYCODE_NUM_LOCK },
+        { 70, SAPP_KEYCODE_SCROLL_LOCK }, { 71, SAPP_KEYCODE_KP_7 },
+        { 72, SAPP_KEYCODE_KP_8 }, { 73, SAPP_KEYCODE_KP_9 },
+        { 74, SAPP_KEYCODE_KP_SUBTRACT }, { 75, SAPP_KEYCODE_KP_4 },
+        { 76, SAPP_KEYCODE_KP_5 }, { 77, SAPP_KEYCODE_KP_6 },
+        { 78, SAPP_KEYCODE_KP_ADD }, { 79, SAPP_KEYCODE_KP_1 },
+        { 80, SAPP_KEYCODE_KP_2 }, { 81, SAPP_KEYCODE_KP_3 },
+        { 82, SAPP_KEYCODE_KP_0 }, { 83, SAPP_KEYCODE_KP_DECIMAL },
+        { 85, SAPP_KEYCODE_WORLD_1 },          /* < on ISO keyboards */
+        { 86, SAPP_KEYCODE_BACKSLASH },        /* extra backslash key */
+        { 87, SAPP_KEYCODE_F11 }, { 88, SAPP_KEYCODE_F12 },
+        { 96, SAPP_KEYCODE_KP_ENTER }, { 97, SAPP_KEYCODE_RIGHT_CONTROL },
+        { 98, SAPP_KEYCODE_KP_DIVIDE }, { 100, SAPP_KEYCODE_RIGHT_ALT },
+        { 102, SAPP_KEYCODE_HOME }, { 103, SAPP_KEYCODE_UP },
+        { 104, SAPP_KEYCODE_PAGE_UP }, { 105, SAPP_KEYCODE_LEFT },
+        { 106, SAPP_KEYCODE_RIGHT }, { 107, SAPP_KEYCODE_END },
+        { 108, SAPP_KEYCODE_DOWN }, { 109, SAPP_KEYCODE_PAGE_DOWN },
+        { 110, SAPP_KEYCODE_INSERT }, { 111, SAPP_KEYCODE_DELETE },
+        { 113, SAPP_KEYCODE_INVALID }, { 114, SAPP_KEYCODE_INVALID },
+        { 115, SAPP_KEYCODE_INVALID }, { 116, SAPP_KEYCODE_INVALID },
+        { 117, SAPP_KEYCODE_KP_EQUAL },
+        { 119, SAPP_KEYCODE_PAUSE },
+        { 125, SAPP_KEYCODE_LEFT_SUPER }, { 126, SAPP_KEYCODE_RIGHT_SUPER },
+        { 127, SAPP_KEYCODE_MENU },
+    };
+    for (size_t i = 0; i < sizeof(keymap)/sizeof(keymap[0]); i++) {
+        if (keymap[i].key != SAPP_KEYCODE_INVALID) {
+            _sapp.keycodes[keymap[i].code] = keymap[i].key;
+        }
+    }
+}
+
+#endif // _SAPP_WAYLAND
+
 _SOKOL_PRIVATE void _sapp_linux_frame(void) {
     _sapp_x11_update_dimensions_from_window_size();
     #if defined(SOKOL_WGPU)
