@@ -15592,6 +15592,7 @@ _SOKOL_PRIVATE void _sapp_wayland_run(const sapp_desc* desc) {
 
 #endif // _SAPP_WAYLAND
 
+#if defined(_SAPP_X11)
 _SOKOL_PRIVATE void _sapp_linux_frame(void) {
     _sapp_x11_update_dimensions_from_window_size();
     #if defined(SOKOL_WGPU)
@@ -15607,8 +15608,9 @@ _SOKOL_PRIVATE void _sapp_linux_frame(void) {
         #endif
     #endif
 }
+#endif // _SAPP_X11
 
-_SOKOL_PRIVATE void _sapp_linux_run(const sapp_desc* desc) {
+_SOKOL_PRIVATE void _sapp_x11_run(const sapp_desc* desc) {
     /* The following lines are here to trigger a linker error instead of an
         obscure runtime error if the user has forgotten to add -pthread to
         the compiler or linker options. They have no other purpose.
@@ -15699,6 +15701,16 @@ _SOKOL_PRIVATE void _sapp_linux_run(const sapp_desc* desc) {
     _sapp_x11_destroy_standard_cursors();
     XCloseDisplay(_sapp.x11.display);
     _sapp_discard_state();
+}
+#endif // _SAPP_X11
+
+/* the shared sapp_run entry picks the window system at compile time */
+_SOKOL_PRIVATE void _sapp_linux_run(const sapp_desc* desc) {
+    #if defined(_SAPP_X11)
+        _sapp_x11_run(desc);
+    #else
+        _sapp_wayland_run(desc);
+    #endif
 }
 
 #if !defined(SOKOL_NO_ENTRY)
