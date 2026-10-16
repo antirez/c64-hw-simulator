@@ -64,8 +64,15 @@ equations come from the 82S100 read-out by Mark Smith and Marko Mäkelä.
     make
     ./c64-hw-sim [program.prg]
 
-It runs on macOS and Linux (X11), with OpenGL. The graphics library (sokol)
-and the interface library (nuklear) are in `third_party/`.
+It runs on macOS and Linux, with OpenGL. On Linux it opens a native X11 or
+Wayland window, depending on the build:
+
+    make                    build against X11 (the default)
+    make C64HW_WAYLAND=1    build against Wayland (needs libwayland, libxkbcommon, EGL)
+
+The graphics library (sokol) and the interface library (nuklear) are in
+`third_party/`. The Wayland part of sokol here is ours: upstream sokol
+has no Wayland support yet.
 
 ## Using it
 
