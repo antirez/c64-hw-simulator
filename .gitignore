@@ -1,4 +1,5 @@
 build/
 c64-hw-sim
+c64-hw-sim.exe
 *.dSYM/
 .DS_Store
