@@ -21,7 +21,7 @@ else ifeq ($(C64HW_WAYLAND),1)
              -DSOKOL_GLCORE -DSOKOL_WAYLAND \
              $(shell pkg-config --cflags wayland-client wayland-cursor xkbcommon)
   SOKOL_FLAGS = -Wno-unused-but-set-variable -Wno-sign-compare -Wno-unused-variable
-  LIBS = $(shell pkg-config --libs wayland-client wayland-cursor xkbcommon) -lEGL -lGL -ldl -lpthread -lm
+  LIBS = $(shell pkg-config --libs wayland-client wayland-cursor xkbcommon) -lwayland-egl -lEGL -lGL -ldl -lpthread -lm
 else
   CFLAGS  := $(OPT) -g -Wall -Wextra -Wno-unused-parameter -Isrc -Ichips -Ithird_party -DSOKOL_GLCORE
   SOKOL_FLAGS = -Wno-unused-but-set-variable -Wno-sign-compare -Wno-unused-variable

@@ -2607,6 +2607,7 @@ inline void sapp_run(const sapp_desc& desc) { return sapp_run(&desc); }
         #include "wayland/xdg-decoration-unstable-v1-client-protocol.h"
         #include <xkbcommon/xkbcommon.h>
         #include <wayland-cursor.h>
+        #include <wayland-egl.h>    /* wl_egl_window* */
         #include <sys/mman.h>   /* mmap the keymap fd */
         #include <linux/input-event-codes.h> /* BTN_LEFT and friends */
         #include <unistd.h>     /* pipe/read/write/close for the fd round-trips */
@@ -3326,6 +3327,7 @@ typedef struct {
     struct wl_output* output;
     struct wl_shm* shm;
     struct wl_data_device_manager* data_device_mgr;
+    struct wl_egl_window* egl_window;
     struct wl_data_device* data_device;
     // input, created when the seat announces its capabilities
     struct wl_pointer* pointer;
@@ -6966,7 +6968,6 @@ _SOKOL_PRIVATE void _sapp_ios_gles3_init(UIWindowScene* windowScene) {
     const bool srgb_requested = _sapp.desc.srgb;
     const bool depth_requested = _sapp.desc.depth_format != SAPP_PIXELFORMAT_NONE;
     const bool stencil_requested = _sapp.desc.depth_format == SAPP_PIXELFORMAT_DEPTH_STENCIL;
-    _sapp.ios.eagl_ctx = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES3];
     _sapp.ios.eagl_ctx = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES3];
     _sapp.ios.view = [[_sapp_ios_view alloc] initWithFrame:screen_rect];
     if (srgb_requested) {
@@ -14274,6 +14275,10 @@ _SOKOL_PRIVATE void _sapp_x11_process_event(XEvent* event) {
 #if defined(_SAPP_X11)
 _SOKOL_PRIVATE void _sapp_x11_create_window(Visual* visual_or_null, int depth);
 #endif
+#if defined(_SAPP_WAYLAND)
+_SOKOL_PRIVATE int32_t _sapp_wl_window_dev_width(void);
+_SOKOL_PRIVATE int32_t _sapp_wl_window_dev_height(void);
+#endif
 
 _SOKOL_PRIVATE void _sapp_egl_init(void) {
     #if defined(SOKOL_GLCORE)
@@ -14286,13 +14291,13 @@ _SOKOL_PRIVATE void _sapp_egl_init(void) {
         }
     #endif
 
-    _sapp.egl.display = eglGetDisplay(
-        #if defined(_SAPP_WAYLAND)
-            (EGLNativeDisplayType)0
-        #else
-            (EGLNativeDisplayType)_sapp.x11.display
-        #endif
-    );
+    #if defined(_SAPP_WAYLAND)
+        // eglGetDisplay(0) grabs the X11 display (DISPLAY is set), pass
+        // the connection explicitly
+        _sapp.egl.display = eglGetDisplay((EGLNativeDisplayType)_sapp.wayland.display);
+    #else
+        _sapp.egl.display = eglGetDisplay((EGLNativeDisplayType)_sapp.x11.display);
+    #endif
     if (EGL_NO_DISPLAY == _sapp.egl.display) {
         _SAPP_PANIC(LINUX_EGL_GET_DISPLAY_FAILED);
     }
@@ -14387,11 +14392,19 @@ _SOKOL_PRIVATE void _sapp_egl_init(void) {
     };
     const EGLint* surf_attrs = wants_srgb ? srgb_surface_attribs : 0;
     #if defined(_SAPP_WAYLAND)
-        _sapp.egl.surface = eglCreateWindowSurface(_sapp.egl.display, config, (EGLNativeWindowType)_sapp.wayland.surface, surf_attrs);
+        // libwayland-egl window wrapping the toplevel surface; direct
+        // wl_surface-as-native-window fails with EGL_BAD_ALLOC on sway 1.10
+        _sapp.wayland.egl_window = wl_egl_window_create(_sapp.wayland.surface,
+            _sapp_wl_window_dev_width(), _sapp_wl_window_dev_height());
+        if (!_sapp.wayland.egl_window) {
+            _SAPP_PANIC(LINUX_EGL_CREATE_WINDOW_SURFACE_FAILED);
+        }
+        _sapp.egl.surface = eglCreateWindowSurface(_sapp.egl.display, config, (EGLNativeWindowType)_sapp.wayland.egl_window, surf_attrs);
     #else
         _sapp.egl.surface = eglCreateWindowSurface(_sapp.egl.display, config, (EGLNativeWindowType)_sapp.x11.window, surf_attrs);
     #endif
     if (EGL_NO_SURFACE == _sapp.egl.surface) {
+        fprintf(stderr, "eglCreateWindowSurface: EGL error 0x%x (display 0x%lx)\n", eglGetError(), (unsigned long)(uintptr_t)_sapp.egl.display);
         _SAPP_PANIC(LINUX_EGL_CREATE_WINDOW_SURFACE_FAILED);
     }
 
@@ -14530,7 +14543,7 @@ _SOKOL_PRIVATE void _sapp_wayland_init_keytable(void) {
 // ---- the Wayland backend ------------------------------------------------
 
 // protocol versions to bind; newer versions are fine, these are the floors
-#define _SAPP_WL_COMPOSITOR_MIN_VERSION (3)   // wl_surface_set_buffer_scale
+#define _SAPP_WL_COMPOSITOR_MIN_VERSION (6)   // wl_surface.preferred_buffer_scale
 
 // the listeners are static structs defined below; forward declare for the
 // registry handler
@@ -14538,7 +14551,10 @@ static const struct wl_registry_listener _sapp_wl_registry_listener;
 static const struct xdg_wm_base_listener _sapp_wl_wm_base_listener;
 static const struct wl_seat_listener _sapp_wl_seat_listener;
 static const struct wl_output_listener _sapp_wl_output_listener;
+static const struct wl_surface_listener _sapp_wl_surface_listener;
 _SOKOL_PRIVATE bool _sapp_x11_parse_dropped_files_list(const char* src);
+_SOKOL_PRIVATE int32_t _sapp_wl_window_dev_width(void);
+_SOKOL_PRIVATE int32_t _sapp_wl_window_dev_height(void);
 static const struct wl_data_offer_listener _sapp_wl_offer_listener;
 static const struct wl_data_device_listener _sapp_wl_device_listener;
 _SOKOL_PRIVATE void _sapp_wayland_maybe_get_data_device(void);
@@ -14556,15 +14572,16 @@ _SOKOL_PRIVATE void _sapp_wl_registry_global(void* data, struct wl_registry* reg
     _SOKOL_UNUSED(data);
     if (0 == strcmp(interface, "wl_compositor") && version >= _SAPP_WL_COMPOSITOR_MIN_VERSION) {
         _sapp.wayland.compositor = wl_registry_bind(registry, name, &wl_compositor_interface, _SAPP_WL_COMPOSITOR_MIN_VERSION);
+        _sapp_wayland_create_surface();
     } else if (0 == strcmp(interface, "xdg_wm_base")) {
         _sapp.wayland.wm_base = wl_registry_bind(registry, name, &xdg_wm_base_interface, version < 2 ? version : 2);
-        xdg_wm_base_add_listener(_sapp.wayland.wm_base, &_sapp_wl_wm_base_listener, 0);
+        xdg_wm_base_add_listener(_sapp.wayland.wm_base, &_sapp_wl_wm_base_listener, 0);;
     } else if (0 == strcmp(interface, "wl_seat") && version >= 5) {
         _sapp.wayland.seat = wl_registry_bind(registry, name, &wl_seat_interface, version > 8 ? 8 : version);
-        wl_seat_add_listener(_sapp.wayland.seat, &_sapp_wl_seat_listener, 0);
+        wl_seat_add_listener(_sapp.wayland.seat, &_sapp_wl_seat_listener, 0);;
     } else if (0 == strcmp(interface, "wl_output") && version >= 2) {
         _sapp.wayland.output = wl_registry_bind(registry, name, &wl_output_interface, version > 2 ? 2 : version);
-        wl_output_add_listener(_sapp.wayland.output, &_sapp_wl_output_listener, 0);
+        wl_output_add_listener(_sapp.wayland.output, &_sapp_wl_output_listener, 0);;
     } else if (0 == strcmp(interface, "wl_shm") && version >= 1) {
         _sapp.wayland.shm = wl_registry_bind(registry, name, &wl_shm_interface, version > 1 ? 1 : version);
     } else if (0 == strcmp(interface, "wl_data_device_manager")) {
@@ -14895,7 +14912,7 @@ static const struct wl_seat_listener _sapp_wl_seat_listener = {
 _SOKOL_PRIVATE void _sapp_wayland_maybe_get_data_device(void) {
     if (_sapp.wayland.data_device_mgr && _sapp.wayland.seat && !_sapp.wayland.data_device) {
         _sapp.wayland.data_device = wl_data_device_manager_get_data_device(_sapp.wayland.data_device_mgr, _sapp.wayland.seat);
-        wl_data_device_add_listener(_sapp.wayland.data_device, &_sapp_wl_device_listener, 0);
+        wl_data_device_add_listener(_sapp.wayland.data_device, &_sapp_wl_device_listener, 0);;
     }
 }
 
@@ -14951,7 +14968,10 @@ _SOKOL_PRIVATE void _sapp_wl_xdg_surface_configure(void* data, struct xdg_surfac
 
 _SOKOL_PRIVATE void _sapp_wl_device_data_offer(void* data, struct wl_data_device* device, struct wl_data_offer* offer) {
     _SOKOL_UNUSED(data); _SOKOL_UNUSED(device);
-    wl_data_offer_add_listener(offer, &_sapp_wl_offer_listener, 0);
+    if (0 == wl_proxy_get_listener((struct wl_proxy*) offer)) {
+        wl_data_offer_add_listener(offer, &_sapp_wl_offer_listener, 0);
+    } else {;
+    }
     _sapp.wl_data.offer_has_uri_list = false;
 }
 
@@ -15110,9 +15130,6 @@ _SOKOL_PRIVATE void _sapp_wl_device_selection(void* data, struct wl_data_device*
         wl_data_offer_destroy(_sapp.wl_data.selection_offer);
     }
     _sapp.wl_data.selection_offer = offer;
-    if (offer) {
-        wl_data_offer_add_listener(offer, &_sapp_wl_offer_listener, 0);
-    }
 }
 
 
@@ -15178,11 +15195,37 @@ _SOKOL_PRIVATE void _sapp_wayland_create_surface(void) {
     if (!_sapp.wayland.surface) {
         _SAPP_PANIC(LINUX_WAYLAND_CREATE_SURFACE_FAILED);
     }
-    // wl_surface.preferred_buffer_scale rides the core listener when the
-    // compositor supports it; wl_output.scale is the fallback
-    /* scale comes from wl_output.scale for now; wl_surface.preferred_buffer_scale
-     * would need a core listener with an ack dance of its own */
+    wl_surface_add_listener(_sapp.wayland.surface, &_sapp_wl_surface_listener, 0);;
 }
+
+// the core surface listener: preferred scale comes straight from the
+// compositor (wl_compositor v6+), the wl_output path stays as the fallback
+_SOKOL_PRIVATE void _sapp_wl_surface_enter(void* data, struct wl_surface* surface, struct wl_output* output) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(surface); _SOKOL_UNUSED(output);
+}
+_SOKOL_PRIVATE void _sapp_wl_surface_leave(void* data, struct wl_surface* surface, struct wl_output* output) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(surface); _SOKOL_UNUSED(output);
+}
+_SOKOL_PRIVATE void _sapp_wl_surface_scale(void* data, struct wl_surface* surface, int32_t factor) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(surface);
+    if (factor > _sapp.wayland.output_scale) {
+        _sapp.wayland.output_scale = factor;
+        _sapp.wayland.have_scale_event = true;
+        // the buffer scale applies to the next commit; resize rides the
+        // next configure
+        _sapp.wayland.resize_pending = true;
+    }
+}
+_SOKOL_PRIVATE void _sapp_wl_surface_transform(void* data, struct wl_surface* surface, uint32_t transform) {
+    _SOKOL_UNUSED(data); _SOKOL_UNUSED(surface); _SOKOL_UNUSED(transform);
+}
+
+static const struct wl_surface_listener _sapp_wl_surface_listener = {
+    _sapp_wl_surface_enter,
+    _sapp_wl_surface_leave,
+    _sapp_wl_surface_scale,
+    _sapp_wl_surface_transform,
+};
 
 _SOKOL_PRIVATE void _sapp_wayland_create_toplevel(void) {
     SOKOL_ASSERT(_sapp.wayland.surface);
@@ -15445,8 +15488,14 @@ _SOKOL_PRIVATE void _sapp_wayland_commit_frame(void) {
         _sapp.wayland.configured_width = _sapp.wayland.new_width;
         _sapp.wayland.configured_height = _sapp.wayland.new_height;
         _sapp.wayland.resize_pending = false;
-        if ((old_w != _sapp.framebuffer_width || old_h != _sapp.framebuffer_height) && !_sapp.first_frame) {
-            _sapp_wayland_app_event(SAPP_EVENTTYPE_RESIZED);
+        if (old_w != _sapp.framebuffer_width || old_h != _sapp.framebuffer_height) {
+            if (_sapp.wayland.egl_window) {
+                wl_egl_window_resize(_sapp.wayland.egl_window,
+                    _sapp.framebuffer_width, _sapp.framebuffer_height, 0, 0);
+            }
+            if (!_sapp.first_frame) {
+                _sapp_wayland_app_event(SAPP_EVENTTYPE_RESIZED);
+            }
         }
     }
     if (_sapp.wayland.pending_ack && _sapp.wayland.have_configure_serial) {
@@ -15476,7 +15525,7 @@ _SOKOL_PRIVATE void _sapp_wayland_run(const sapp_desc* desc) {
         _SAPP_PANIC(LINUX_WAYLAND_DISPLAY_CONNECT_FAILED);
     }
     _sapp.wayland.registry = wl_display_get_registry(_sapp.wayland.display);
-    wl_registry_add_listener(_sapp.wayland.registry, &_sapp_wl_registry_listener, 0);
+    wl_registry_add_listener(_sapp.wayland.registry, &_sapp_wl_registry_listener, 0);;
     // collect all globals, listeners fill the wayland struct
     wl_display_roundtrip(_sapp.wayland.display);
     wl_display_roundtrip(_sapp.wayland.display);   // second pass: input objects created along the way
@@ -15496,12 +15545,28 @@ _SOKOL_PRIVATE void _sapp_wayland_run(const sapp_desc* desc) {
     _sapp_wayland_init_keytable();
     // window size before the first configure comes from the desc
     _sapp_wayland_update_dimensions(_sapp_wl_window_dev_width(), _sapp_wl_window_dev_height());
+    // xdg order: role first and commit, then wait for the initial
+    // configure, ack it, and only then hand buffers to EGL
+    _sapp_wayland_show_window();
+    // block until the initial configure actually arrives (the compositor
+    // sends it only after it picked a size for us)
+    for (int i = 0; i < 300 && !_sapp.wayland.pending_ack; i++) {   // ~3s bound
+        struct pollfd fd = { wl_display_get_fd(_sapp.wayland.display), POLLIN, 0 };
+        if (poll(&fd, 1, 10) <= 0) continue;
+        if (wl_display_prepare_read(_sapp.wayland.display) != 0) {
+            wl_display_dispatch_pending(_sapp.wayland.display);
+            continue;
+        }
+        if (wl_display_read_events(_sapp.wayland.display) < 0) break;
+        wl_display_dispatch_pending(_sapp.wayland.display);
+    }
+    _sapp_wayland_commit_frame();                   // sizes + ack go out now
     #if defined(_SAPP_EGL)
         _sapp_egl_init();
     #endif
     sapp_set_icon(&desc->icon);
     _sapp.valid = true;
-    _sapp_wayland_show_window();
+    _sapp_wayland_commit_frame();
 
     while (!_sapp.quit_ordered) {
         _sapp_timing_update(&_sapp.timing, 0.0);
@@ -15555,6 +15620,9 @@ _SOKOL_PRIVATE void _sapp_wayland_run(const sapp_desc* desc) {
     #if defined(_SAPP_EGL)
         _sapp_egl_destroy();
     #endif
+    if (_sapp.wayland.egl_window) {
+        wl_egl_window_destroy(_sapp.wayland.egl_window);
+    }
     if (_sapp.wayland.decoration) {
         zxdg_toplevel_decoration_v1_destroy(_sapp.wayland.decoration);
     }
