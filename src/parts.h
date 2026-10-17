@@ -29,6 +29,22 @@ extern const part_type_t PT_74LS08, PT_7406, PT_74LS139, PT_74LS257, PT_74LS258;
 extern const part_type_t PT_74LS373, PT_4066, PT_556, PT_74LS629;
 extern const part_type_t PT_74LS74, PT_74LS193, PT_MC4044;
 
+/* 82S100 PLA: its logic as a table of product terms (see parts.c). The
+ * input word has bit PI_x set when that input pin is high; the outputs are
+ * pin levels, bit PO_x. Pin names as in the schematic (/LORAM, /CAS...). */
+enum { PI_A13, PI_A14, PI_A15, PI_VA14, PI_CHAREN, PI_HIRAM, PI_LORAM, PI_CAS,
+       PI_VA12, PI_VA13, PI_GAME, PI_EXROM, PI_RW, PI_AEC, PI_BA, PI_A12, PLA_NIN };
+enum { PO_ROMH, PO_ROML, PO_IO, PO_GRW, PO_CHAROM, PO_KERNAL, PO_BASIC, PO_CASRAM, PLA_NOUT };
+typedef struct {
+    uint16_t mask, value;   /* true when (inputs & mask) == value */
+    uint8_t outputs;        /* bit PO_x set: the term feeds that output */
+} pla_term_t;
+extern const pla_term_t pla_terms[];
+extern const int pla_nterms;
+extern const int pla_in_pin[PLA_NIN], pla_out_pin[PLA_NOUT];
+unsigned pla_read_inputs(sim_t *s, part_t *p);
+unsigned pla_logic(unsigned inputs);
+
 /* Attach a type to a part: pin names/flags, functions, state. */
 void part_set_type(sim_t *s, int part, const part_type_t *t);
 /* Read/drive a group of pins as a binary number (pins[0] is bit 0). */

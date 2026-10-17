@@ -80,14 +80,32 @@ Chips are boxes named by role:
 - BASIC, KERNAL and CHAR are the ROMs.
 - PLA is the address decoder.
 
-Zoom in to see references and address ranges. Pins show their state as a
-logic probe would: red high, blue low, yellow pulsing, gray floating,
-magenta when two outputs fight.
+Pins show their state as a logic probe would: red high, blue low, yellow
+pulsing, gray floating, magenta when two outputs fight. Zoom in and the
+chips show references, address ranges and pin numbers; zoom in more and
+the logic chips show their gates, the others their pin names. Hovering a
+pin tells what it is: connector pins have their function ("CN4.3 ATN
+(SERIAL)").
 
 Click a pin to put it on the oscilloscope and to break it: floating,
-shorted to GND, or shorted to +5V. Click a chip to pull it out. Click a
-resistor, a ferrite bead or the crystal to open it. The control panel
-lists the faults, each with a repair button.
+shorted to GND, or shorted to +5V. Click a chip to pull it out, or to
+inspect it. Click a resistor, a ferrite bead or the crystal to open it.
+The control panel lists the faults, each with a repair button.
+
+The inspector draws the chip large, like a datasheet: the pins numbered
+and colored, the nets outside, the gates inside, wired to their pins. A
+wire shows what is on it; the output of a gate shows what the gate itself
+drives, so a gate driving high into a net that stays low is plain to see.
+On a 7406 the output mark is the open collector transistor: blue while it
+pulls the line low, gray while it is off and the pull-up decides. For the
+PLA the inspector lists its product terms, lit while they are true, with
+every input colored by its level: which term selects what, and which
+input keeps a term from firing.
+
+RESET works like a reset cartridge: it shorts /RESET to GND on the user
+port. Hold it, or keep it pressed to look at the board in reset. The CPU,
+the CIAs and the SID reset; the VIC, which has no reset pin, and the RAM
+don't. Power cycle switches the C64 off and on again.
 
 The control panel also loads .prg files. They are written straight into
 the DRAM chips, as a freezer cartridge would do it, so loading works on a
@@ -109,7 +127,7 @@ picture. A fault is written `REF:what` or `REF.PIN:what`:
 Other options:
 
 - `--at 150:U6.17:open --at 300:repair` breaks and repairs parts while the
-  C64 runs.
+  C64 runs; `RESET:pressed` and `RESET:released` work there too.
 - `--nets` reports the nets where outputs fought.
 - `C64HW_TYPE=$'PRINT 1+1\n'` types text after boot.
 - `C64HW_CHECK=1` checks every KERNAL read and every VIC fetch against the
@@ -117,6 +135,9 @@ Other options:
 - `--record 900:DIR --frames 90` (graphical mode) saves the window 90
   times, every 4 emulated frames from frame 900 on. This is how the GIF
   above was made.
+- `--inspect U8`, `--view X,Y,ZOOM`, `--mouse X,Y`, `--down X,Y@F` and
+  `--up X,Y@F` (graphical mode) open the inspector, aim the board view and
+  move or click the mouse, for screenshots and tests of the interface.
 
 `tests/faults.sh` runs 31 common faults. The expected symptom of each one
 was written down before the simulator was run.

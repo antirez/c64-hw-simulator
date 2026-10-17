@@ -192,6 +192,22 @@ static void scope_and_stats(board_t *b) {
         else if (n->level) b->st_hi[i]++;
         else b->st_lo[i]++;
     }
+    if (!b->pin_stats) return;
+    for (int i = 0; i < s->npins; i++) {
+        drive_t d = s->pins[i].drive;
+        if ((d >> 1) == S_Z) b->pst_off[i]++;
+        else if (d & 1) b->pst_hi[i]++;
+        else b->pst_lo[i]++;
+        if ((d >> 1) == S_PULL) b->pst_weak[i]++;
+    }
+    /* The PLA inputs are TTL: reading them has no side effects. */
+    part_t *pla = &s->parts[b->p_pla];
+    if (!pla->dead) {
+        unsigned in = pla_read_inputs(s, pla);
+        for (int t = 0; t < pla_nterms; t++)
+            if ((in & pla_terms[t].mask) == pla_terms[t].value) b->pla_hits[t]++;
+        b->pla_samples++;
+    }
 }
 
 static void bus_step(board_t *b, int step) {
@@ -605,6 +621,10 @@ static void board_rebuild(board_t *b) {
         }
     if ((b->key_matrix[8] & 1) && b->pin_restore >= 0 && s->pins[b->pin_restore].fault != PF_OPEN)
         sim_join(s, s->pins[b->pin_restore].net, b->net_gnd);
+    /* The RESET button closes user port pin 3 (/RESET) to pin 1 (GND). */
+    if (b->reset_button && b->pin_reset >= 0 && b->pin_reset_gnd >= 0 &&
+        s->pins[b->pin_reset].fault != PF_OPEN && s->pins[b->pin_reset_gnd].fault != PF_OPEN)
+        sim_join(s, s->pins[b->pin_reset].net, s->pins[b->pin_reset_gnd].net);
     for (int i = 0; i < s->nparts; i++) sim_update_part_power(s, i);
     vco_state_t *vco = s->parts[b->p_u31].state;
     vco->crystal_ok = b->p_y1 < 0 || s->parts[b->p_y1].rfault != RF_OPEN;
@@ -653,6 +673,80 @@ static int cn1_pin_on_net_of(board_t *b, int part, int number) {
     for (int i = 0; i < cn1->npins; i++)
         if (s->pins[cn1->first_pin + i].net == net) return cn1->first_pin + i;
     return -1;
+}
+
+/* The connectors, and what each pin is for (from the C64 service manual,
+ * checked against the netlist: keyboard COL lines go to CIA1 port A, ROW
+ * lines to port B; control port 1 is the one with the light pen). Pins are
+ * named by their pad ("1", "A"...); '_' is shown as a space. */
+static const struct { const char *ref, *name, *pins; } conn_defs[] = {
+    { "CN1", "KEYBOARD", "1=GND 3=RESTORE 4=+5V 5=ROW3 6=ROW6 7=ROW5 8=ROW4 9=ROW7 10=ROW2 "
+      "11=ROW1 12=ROW0 13=COL0 14=COL6 15=COL5 16=COL4 17=COL3 18=COL2 19=COL1 20=COL7" },
+    { "CN2", "USER PORT", "1=GND 2=+5V 3=/RESET 4=CNT1 5=SP1 6=CNT2 7=SP2 8=/PC2 9=SERIAL_ATN "
+      "10=9V_AC 11=9V_AC 12=GND A=GND B=/FLAG2 C=PB0 D=PB1 E=PB2 F=PB3 H=PB4 J=PB5 K=PB6 L=PB7 "
+      "M=PA2 N=GND" },
+    { "CN3", "CASSETTE", "A=GND B=+5V C=MOTOR D=READ E=WRITE F=SENSE" },
+    { "CN4", "SERIAL", "1=SRQ_IN 2=GND 3=ATN 4=CLK 5=DATA 6=/RESET" },
+    { "CN5", "AUDIO/VIDEO", "1=LUMINANCE 2=GND 3=AUDIO_OUT 4=VIDEO_OUT 5=AUDIO_IN 6=CHROMA "
+      "7=NOT_CONNECTED 8=NOT_CONNECTED" },
+    { "CN6", "EXPANSION PORT", "1=GND 2=+5V 3=+5V 4=/IRQ 5=R/W 6=DOT_CLOCK 7=/I/O1 8=/GAME "
+      "9=/EXROM 10=/I/O2 11=/ROML 12=BA 13=/DMA 14=D7 15=D6 16=D5 17=D4 18=D3 19=D2 20=D1 21=D0 "
+      "22=GND A=GND B=/ROMH C=/RESET D=/NMI E=PHI2 F=A15 H=A14 J=A13 K=A12 L=A11 M=A10 N=A9 "
+      "P=A8 R=A7 S=A6 T=A5 U=A4 V=A3 W=A2 X=A1 Y=A0 Z=GND" },
+    { "CN7", "POWER", "1=GND 2=GND 3=GND 4=+5V 5=+5V 6=9V_AC 7=9V_AC" },
+    { "CN8", "CONTROL PORT 2", "1=UP 2=DOWN 3=LEFT 4=RIGHT 5=POT_Y 6=FIRE 7=+5V 8=GND 9=POT_X" },
+    { "CN9", "CONTROL PORT 1", "1=UP 2=DOWN 3=LEFT 4=RIGHT 5=POT_Y 6=FIRE/LIGHT_PEN 7=+5V 8=GND "
+      "9=POT_X" },
+    { "CN10", "POWER LED", "1=LED+ 2=LED- 3=LED+" },
+};
+
+/* The pin of a connector with the given pad name ("3", "C"), or -1. */
+static int connector_pin(board_t *b, int part, const char *pad) {
+    if (part < 0) return -1;
+    const part_t *p = &b->sim.parts[part];
+    for (int k = 0; k < p->npins; k++)
+        if (!strcmp(bd_pads[p->first_pin + k].name, pad)) return p->first_pin + k;
+    return -1;
+}
+
+static void setup_connectors(board_t *b) {
+    sim_t *s = &b->sim;
+    b->pin_func = calloc(s->npins, sizeof(char *));
+    for (size_t c = 0; c < sizeof(conn_defs) / sizeof(conn_defs[0]); c++) {
+        int part = sim_find_part(s, conn_defs[c].ref);
+        if (part < 0) continue;
+        char *copy = strdup(conn_defs[c].pins), *save = NULL;
+        for (char *tok = strtok_r(copy, " ", &save); tok; tok = strtok_r(NULL, " ", &save)) {
+            char *eq = strchr(tok, '=');
+            *eq = 0;
+            for (char *u = eq + 1; *u; u++) if (*u == '_') *u = ' ';
+            /* A pad name can repeat (both sides of an edge connector). */
+            const part_t *p = &s->parts[part];
+            for (int k = 0; k < p->npins; k++)
+                if (!strcmp(bd_pads[p->first_pin + k].name, tok)) b->pin_func[p->first_pin + k] = eq + 1;
+        }
+        /* The strings stay allocated: they are the labels. */
+    }
+}
+
+const char *board_connector_name(board_t *b, int part) {
+    for (size_t c = 0; c < sizeof(conn_defs) / sizeof(conn_defs[0]); c++)
+        if (!strcmp(conn_defs[c].ref, b->sim.parts[part].ref)) return conn_defs[c].name;
+    return NULL;
+}
+
+const char *board_pin_func(board_t *b, int pin) { return pin >= 0 ? b->pin_func[pin] : NULL; }
+
+bool board_net_simulated(board_t *b, int net) {
+    if (net < 0) return false;
+    const sim_t *s = &b->sim;
+    const net_t *n = &s->nets[s->nets[net].root];
+    if (n->rail) return true;
+    for (int k = 0; k < n->npins; k++) {
+        int part = s->pins[n->pins[k]].part;
+        if (s->parts[part].kind == PART_IC && board_part_simulated(b, part)) return true;
+    }
+    return false;
 }
 
 board_t *board_create(void) {
@@ -722,6 +816,16 @@ board_t *board_create(void) {
     b->st_lo = calloc(s->nnets, sizeof(uint32_t));
     b->st_float = calloc(s->nnets, sizeof(uint32_t));
     b->st_fight = calloc(s->nnets, sizeof(uint32_t));
+    b->pst_hi = calloc(s->npins, sizeof(uint32_t));
+    b->pst_lo = calloc(s->npins, sizeof(uint32_t));
+    b->pst_off = calloc(s->npins, sizeof(uint32_t));
+    b->pst_weak = calloc(s->npins, sizeof(uint32_t));
+    b->p_pla = sim_find_part(s, "U17");
+    /* The RESET button sits on the user port, like a reset cartridge. */
+    int user_port = sim_find_part(s, "CN2");
+    b->pin_reset = connector_pin(b, user_port, "3");
+    b->pin_reset_gnd = connector_pin(b, user_port, "1");
+    setup_connectors(b);
     board_power_on(b);
     return b;
 }
@@ -785,9 +889,21 @@ void board_set_rfault(board_t *b, int part, int rfault) {
     board_rebuild(b);
 }
 
+/* The RESET button: not a fault, a switch (see board_rebuild). */
+void board_set_reset_button(board_t *b, bool pressed) {
+    if (b->reset_button == pressed) return;
+    b->reset_button = pressed;
+    board_rebuild(b);
+}
+
 /* Text form of a fault, used by the command line:
- *   U17:removed  U17.18:gnd  U17.18:vcc  U17.18:open  R51:open  R51:short */
+ *   U17:removed  U17.18:gnd  U17.18:vcc  U17.18:open  R51:open  R51:short
+ * and the RESET button: RESET:pressed  RESET:released */
 bool board_apply_fault_spec(board_t *b, const char *spec) {
+    if (!strcmp(spec, "RESET:pressed") || !strcmp(spec, "RESET:released")) {
+        board_set_reset_button(b, !strcmp(spec, "RESET:pressed"));
+        return true;
+    }
     char ref[16] = {0}, what[16] = {0};
     int pin = 0;
     if (sscanf(spec, "%15[^.:].%d:%15s", ref, &pin, what) != 3 &&
@@ -926,4 +1042,21 @@ void board_stats_reset(board_t *b) {
     size_t n = (size_t)b->sim.nnets * sizeof(uint32_t);
     memset(b->st_hi, 0, n); memset(b->st_lo, 0, n);
     memset(b->st_float, 0, n); memset(b->st_fight, 0, n);
+    n = (size_t)b->sim.npins * sizeof(uint32_t);
+    memset(b->pst_hi, 0, n); memset(b->pst_lo, 0, n);
+    memset(b->pst_off, 0, n); memset(b->pst_weak, 0, n);
+    memset(b->pla_hits, 0, sizeof(b->pla_hits));
+    b->pla_samples = 0;
+}
+
+int board_pin_drive_state(board_t *b, int pin) {
+    uint32_t hi = b->pst_hi[pin], lo = b->pst_lo[pin], off = b->pst_off[pin];
+    if (hi + lo + off == 0) {   /* no samples yet: the current drive */
+        drive_t d = b->sim.pins[pin].drive;
+        return (d >> 1) == S_Z ? NET_FLOATING : (d & 1) ? NET_HIGH : NET_LOW;
+    }
+    if ((hi && lo) || ((hi || lo) && off)) return NET_PULSING;
+    if (hi) return NET_HIGH;
+    if (lo) return NET_LOW;
+    return NET_FLOATING;
 }

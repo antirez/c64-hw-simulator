@@ -8,7 +8,7 @@ OPT     ?= -O3 -flto
 CFLAGS  := $(OPT) -g -Wall -Wextra -Wno-unused-parameter -Isrc -Ichips -Ithird_party -DSOKOL_GLCORE
 
 SIM_SRC = src/sim.c src/parts.c src/board.c src/board_data.c src/png.c src/chips_impl.c
-APP_SRC = src/main.c src/ui.c
+APP_SRC = src/main.c src/ui.c src/inspect.c
 
 UNAME := $(shell uname -s)
 ifeq ($(UNAME),Darwin)

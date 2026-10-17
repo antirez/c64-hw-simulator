@@ -20,6 +20,12 @@
  *       emulated frames (12.5 per second) as DIR/00000.png..., COUNT times,
  *       then quit. Made to turn into a video. --at works here too.
  *
+ *   For screenshots and tests of the interface (graphical mode):
+ *   --inspect REF       open the chip inspector on REF ("U8")
+ *   --view X,Y,ZOOM     center the board on X,Y mm, ZOOM times the full view
+ *   --mouse X,Y         keep the mouse at X,Y (window pixels): hovering
+ *   --down X,Y@F, --up X,Y@F   press / release the left button at UI frame F
+ *
  * Fault SPEC examples: U17:removed  U17.18:gnd  U21.14:vcc  U9.2:open
  *                      R51:open  RP4:short */
 #include "sokol_headers.h"
@@ -46,6 +52,11 @@ static struct {
     int nat;
     const char *record;     /* --record N:DIR */
     int record_from;
+    const char *inspect;
+    bool view, mouse;
+    float view_x, view_y, view_zoom, mouse_x, mouse_y;
+    struct { int frame; bool down; float x, y; } clicks[16];
+    int nclicks;
 } args = { .frames = 60 };
 
 static board_t *board;
@@ -177,11 +188,32 @@ static void init(void) {
                              .logger.func = slog_func });
     apply_faults();
     ui_init(board, args.prg, args.scope);
+    if (args.inspect) ui_inspect(args.inspect);
+    if (args.view) ui_view(args.view_x, args.view_y, args.view_zoom);
+}
+
+/* A synthetic mouse event, as if from the window (tests, screenshots). */
+static void mouse_event(sapp_event_type type, float x, float y) {
+    sapp_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = type;
+    ev.mouse_button = SAPP_MOUSEBUTTON_LEFT;
+    ev.mouse_x = x;
+    ev.mouse_y = y;
+    ui_event(&ev);
 }
 
 static void frame(void) {
-    static int count, recorded, next_record = -1;
+    static int count, recorded, next_record = -1, ui_frames;
     static bool done[64];
+    if (args.mouse) mouse_event(SAPP_EVENTTYPE_MOUSE_MOVE, args.mouse_x, args.mouse_y);
+    for (int i = 0; i < args.nclicks; i++) {
+        if (args.clicks[i].frame != ui_frames) continue;
+        mouse_event(SAPP_EVENTTYPE_MOUSE_MOVE, args.clicks[i].x, args.clicks[i].y);
+        mouse_event(args.clicks[i].down ? SAPP_EVENTTYPE_MOUSE_DOWN : SAPP_EVENTTYPE_MOUSE_UP,
+                    args.clicks[i].x, args.clicks[i].y);
+    }
+    ui_frames++;
     ui_frame();
     int f = ui_emulated_frame();
     for (int i = 0; i < args.nat; i++)          /* scheduled faults/repairs */
@@ -221,6 +253,17 @@ int main(int argc, char **argv) {
             const char *a = argv[++i], *colon = strchr(a, ':');
             args.record_from = colon ? atoi(a) : 0;
             args.record = colon ? colon + 1 : a;
+        }
+        else if (!strcmp(argv[i], "--inspect") && i + 1 < argc) args.inspect = argv[++i];
+        else if (!strcmp(argv[i], "--view") && i + 1 < argc)
+            args.view = sscanf(argv[++i], "%f,%f,%f", &args.view_x, &args.view_y, &args.view_zoom) == 3;
+        else if (!strcmp(argv[i], "--mouse") && i + 1 < argc)
+            args.mouse = sscanf(argv[++i], "%f,%f", &args.mouse_x, &args.mouse_y) == 2;
+        else if ((!strcmp(argv[i], "--down") || !strcmp(argv[i], "--up")) && i + 1 < argc && args.nclicks < 16) {
+            bool down = !strcmp(argv[i], "--down");
+            if (sscanf(argv[++i], "%f,%f@%d", &args.clicks[args.nclicks].x, &args.clicks[args.nclicks].y,
+                       &args.clicks[args.nclicks].frame) == 3)
+                args.clicks[args.nclicks++].down = down;
         }
         else if (!strcmp(argv[i], "--text")) args.text = true;
         else if (!strcmp(argv[i], "--nets")) args.nets = true;

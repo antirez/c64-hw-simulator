@@ -92,63 +92,91 @@ const part_type_t PT_6581 = { "6581 SID",
 /* ------------------------------------------------------------------------ */
 
 /* The logic equations of the C64 PLA, from the 82S100 read-out by Mark Smith
- * (ABEL file in "C64 PLA logic equations", Marko Mäkelä et al.). Inputs are
- * read as pin levels: LORAM=1 means the pin is high. The PLA is bipolar, so
- * its inputs are TTL: a floating input reads 1. */
+ * (ABEL file in "C64 PLA logic equations", Marko Mäkelä et al.), written as
+ * the chip is made: an AND array of product terms (every term requires some
+ * inputs high and some low) and an OR array (every output is true when any
+ * of its terms is). The inspector in the UI shows this same table live.
+ *
+ * Inputs are pin levels, named as in the schematic: /LORAM=1 means that pin
+ * is high (BASIC visible). The PLA is bipolar, so its inputs are TTL: a
+ * floating input reads 1. */
+const int pla_in_pin[PLA_NIN] = { 2, 3, 4, 5, 6, 7, 8, 9, 20, 21, 22, 23, 24, 25, 26, 27 };
+const int pla_out_pin[PLA_NOUT] = { 10, 11, 12, 13, 15, 16, 17, 18 };
+
+#define HI(x) ((1u << PI_##x) | (1u << (PI_##x + 16)))     /* input x high */
+#define LO(x) (1u << PI_##x)                                 /* input x low */
+#define TERM(spec, outs) { (uint16_t)((spec) & 0xFFFF), (uint16_t)((spec) >> 16), (uint8_t)(outs) }
+#define PO(x) (1u << PO_##x)
+#define T_CPU LO(AEC)                                       /* the CPU has the bus */
+#define T_VIC HI(AEC)                                       /* the VIC has the bus */
+#define T_IO  (HI(A15) | HI(A14) | LO(A13) | HI(A12))       /* $D000-$DFFF */
+
+/* Every term but the color RAM write also feeds /CASRAM: RAM is selected
+ * only when nothing else is. */
+const pla_term_t pla_terms[] = {
+    /* /BASIC: BASIC ROM at $A000-$BFFF. */
+    TERM(HI(LORAM) | HI(HIRAM) | HI(A15) | LO(A14) | HI(A13) | T_CPU | HI(RW) | HI(GAME), PO(BASIC) | PO(CASRAM)),
+    /* /KERNAL: KERNAL ROM at $E000-$FFFF. */
+    TERM(HI(HIRAM) | HI(A15) | HI(A14) | HI(A13) | T_CPU | HI(RW) | HI(GAME), PO(KERNAL) | PO(CASRAM)),
+    TERM(HI(HIRAM) | HI(A15) | HI(A14) | HI(A13) | T_CPU | HI(RW) | LO(EXROM) | LO(GAME), PO(KERNAL) | PO(CASRAM)),
+    /* /CHAROM: character ROM at $D000-$DFFF for the CPU, $1000/$9000 for the VIC. */
+    TERM(HI(HIRAM) | LO(CHAREN) | T_IO | T_CPU | HI(RW) | HI(GAME), PO(CHAROM) | PO(CASRAM)),
+    TERM(HI(LORAM) | LO(CHAREN) | T_IO | T_CPU | HI(RW) | HI(GAME), PO(CHAROM) | PO(CASRAM)),
+    TERM(HI(HIRAM) | LO(CHAREN) | T_IO | T_CPU | HI(RW) | LO(EXROM) | LO(GAME), PO(CHAROM) | PO(CASRAM)),
+    TERM(HI(VA14) | T_VIC | HI(GAME) | LO(VA13) | HI(VA12), PO(CHAROM) | PO(CASRAM)),
+    TERM(HI(VA14) | T_VIC | LO(EXROM) | LO(GAME) | LO(VA13) | HI(VA12), PO(CHAROM) | PO(CASRAM)),
+    /* /IO: the I/O chips at $D000-$DFFF. CPU reads only while BA is high, so
+     * a read stalled by the VIC has no side effects. */
+    TERM(HI(HIRAM) | HI(CHAREN) | T_IO | T_CPU | HI(BA) | HI(RW) | HI(GAME), PO(IO) | PO(CASRAM)),
+    TERM(HI(HIRAM) | HI(CHAREN) | T_IO | T_CPU | LO(RW) | HI(GAME), PO(IO) | PO(CASRAM)),
+    TERM(HI(LORAM) | HI(CHAREN) | T_IO | T_CPU | HI(BA) | HI(RW) | HI(GAME), PO(IO) | PO(CASRAM)),
+    TERM(HI(LORAM) | HI(CHAREN) | T_IO | T_CPU | LO(RW) | HI(GAME), PO(IO) | PO(CASRAM)),
+    TERM(HI(HIRAM) | HI(CHAREN) | T_IO | T_CPU | HI(BA) | HI(RW) | LO(EXROM) | LO(GAME), PO(IO) | PO(CASRAM)),
+    TERM(HI(HIRAM) | HI(CHAREN) | T_IO | T_CPU | LO(RW) | LO(EXROM) | LO(GAME), PO(IO) | PO(CASRAM)),
+    TERM(HI(LORAM) | HI(CHAREN) | T_IO | T_CPU | HI(BA) | HI(RW) | LO(EXROM) | LO(GAME), PO(IO) | PO(CASRAM)),
+    TERM(HI(LORAM) | HI(CHAREN) | T_IO | T_CPU | LO(RW) | LO(EXROM) | LO(GAME), PO(IO) | PO(CASRAM)),
+    TERM(T_IO | T_CPU | HI(BA) | HI(RW) | HI(EXROM) | LO(GAME), PO(IO) | PO(CASRAM)),
+    TERM(T_IO | T_CPU | LO(RW) | HI(EXROM) | LO(GAME), PO(IO) | PO(CASRAM)),
+    /* GR/W: write to the color RAM. */
+    TERM(LO(CAS) | T_IO | T_CPU | LO(RW), PO(GRW)),
+    /* /ROML: cartridge ROM at $8000-$9FFF. */
+    TERM(HI(LORAM) | HI(HIRAM) | HI(A15) | LO(A14) | LO(A13) | T_CPU | HI(RW) | LO(EXROM), PO(ROML) | PO(CASRAM)),
+    TERM(HI(A15) | LO(A14) | LO(A13) | T_CPU | HI(EXROM) | LO(GAME), PO(ROML) | PO(CASRAM)),
+    /* /ROMH: cartridge ROM at $A000 or $E000 (Ultimax), and for the VIC. */
+    TERM(HI(HIRAM) | HI(A15) | LO(A14) | HI(A13) | T_CPU | HI(RW) | LO(EXROM) | LO(GAME), PO(ROMH) | PO(CASRAM)),
+    TERM(HI(A15) | HI(A14) | HI(A13) | T_CPU | HI(EXROM) | LO(GAME), PO(ROMH) | PO(CASRAM)),
+    TERM(T_VIC | HI(EXROM) | LO(GAME) | HI(VA13) | HI(VA12), PO(ROMH) | PO(CASRAM)),
+    /* Ultimax mode leaves holes where nothing, not even RAM, answers. */
+    TERM(HI(EXROM) | LO(GAME) | LO(A15) | LO(A14) | HI(A12), PO(CASRAM)),
+    TERM(HI(EXROM) | LO(GAME) | LO(A15) | LO(A14) | HI(A13), PO(CASRAM)),
+    TERM(HI(EXROM) | LO(GAME) | LO(A15) | HI(A14), PO(CASRAM)),
+    TERM(HI(EXROM) | LO(GAME) | HI(A15) | LO(A14) | HI(A13), PO(CASRAM)),
+    TERM(HI(EXROM) | LO(GAME) | HI(A15) | HI(A14) | LO(A13) | LO(A12), PO(CASRAM)),
+    /* RAM is selected only while the VIC's /CAS is low: the PLA gates the
+     * DRAM column strobe. */
+    TERM(HI(CAS), PO(CASRAM)),
+};
+const int pla_nterms = sizeof(pla_terms) / sizeof(pla_terms[0]);
+
+unsigned pla_read_inputs(sim_t *s, part_t *p) {
+    unsigned in = 0;
+    for (int k = 0; k < PLA_NIN; k++) in |= (unsigned)pin_in(s, p, pla_in_pin[k]) << k;
+    return in;
+}
+
+unsigned pla_logic(unsigned in) {
+    unsigned any = 0;
+    for (int t = 0; t < pla_nterms; t++)
+        if ((in & pla_terms[t].mask) == pla_terms[t].value) any |= pla_terms[t].outputs;
+    /* The selects are active low; /CASRAM is high when RAM is NOT selected. */
+    return (any ^ ~(1u << PO_CASRAM)) & 0xFF;
+}
+
 static void pla_eval(sim_t *s, part_t *p) {
-    int A13 = pin_in(s, p, 2), A14 = pin_in(s, p, 3), A15 = pin_in(s, p, 4);
-    int VA14N = pin_in(s, p, 5);             /* /VA14 from CIA2 PA0 */
-    int CHAREN = pin_in(s, p, 6), HIRAM = pin_in(s, p, 7), LORAM = pin_in(s, p, 8);
-    int CASN = pin_in(s, p, 9);              /* /CAS from the VIC */
-    int OEN = pin_in(s, p, 19);              /* output enable, tied to GND */
-    int VA12 = pin_in(s, p, 20), VA13 = pin_in(s, p, 21);  /* wired to VA4/VA5 */
-    int GAME = pin_in(s, p, 22), EXROM = pin_in(s, p, 23);
-    int RW = pin_in(s, p, 24);
-    int AECN = pin_in(s, p, 25);             /* inverted AEC: 0 = CPU cycle */
-    int BA = pin_in(s, p, 26), A12 = pin_in(s, p, 27);
-    int cpu = !AECN, vic = AECN;
-    int io_area = A15 && A14 && !A13 && A12;     /* $Dxxx */
-
-    int basic = LORAM && HIRAM && A15 && !A14 && A13 && cpu && RW && GAME;
-    int kernal = HIRAM && A15 && A14 && A13 && cpu && RW && (GAME || (!EXROM && !GAME));
-    int charom =
-        (HIRAM && !CHAREN && io_area && cpu && RW && GAME) ||
-        (LORAM && !CHAREN && io_area && cpu && RW && GAME) ||
-        (HIRAM && !CHAREN && io_area && cpu && RW && !EXROM && !GAME) ||
-        (VA14N && vic && GAME && !VA13 && VA12) ||          /* VIC: $1000 in banks 0/2 */
-        (VA14N && vic && !EXROM && !GAME && !VA13 && VA12);
-    /* I/O: for CPU reads only while BA is high (no side effects on stalled reads). */
-    int io_cfg = (HIRAM || LORAM) && CHAREN;
-    int io =
-        (io_cfg && io_area && cpu && ((BA && RW) || !RW) && GAME) ||
-        (HIRAM && CHAREN && io_area && cpu && ((BA && RW) || !RW) && !EXROM && !GAME) ||
-        (LORAM && CHAREN && io_area && cpu && ((BA && RW) || !RW) && !EXROM && !GAME) ||
-        (io_area && cpu && ((BA && RW) || !RW) && EXROM && !GAME);
-    int grw = !CASN && io_area && cpu && !RW;   /* color RAM write */
-    int roml =
-        (LORAM && HIRAM && A15 && !A14 && !A13 && cpu && RW && !EXROM) ||
-        (A15 && !A14 && !A13 && cpu && EXROM && !GAME);
-    int romh =
-        (HIRAM && A15 && !A14 && A13 && cpu && RW && !EXROM && !GAME) ||
-        (A15 && A14 && A13 && cpu && EXROM && !GAME) ||
-        (vic && EXROM && !GAME && VA13 && VA12);
-    /* Ultimax mode leaves holes where nothing (not even RAM) answers. */
-    int ultimax_hole = EXROM && !GAME &&
-        ((!A15 && !A14 && A12) || (!A15 && !A14 && A13) || (!A15 && A14) ||
-         (A15 && !A14 && A13) || (A15 && A14 && !A13 && !A12));
-    /* RAM is selected (CASRAM low) when nothing else is, and only while the
-     * VIC's /CAS is low: the PLA gates the DRAM column strobe. */
-    int casram_high = basic || kernal || charom || io || roml || romh || ultimax_hole || CASN;
-
-    drive_t en = !OEN;
-    pin_out(s, p, 10, en ? DRV_BIT(!romh) : DRV_Z);
-    pin_out(s, p, 11, en ? DRV_BIT(!roml) : DRV_Z);
-    pin_out(s, p, 12, en ? DRV_BIT(!io) : DRV_Z);
-    pin_out(s, p, 13, en ? DRV_BIT(!grw) : DRV_Z);
-    pin_out(s, p, 15, en ? DRV_BIT(!charom) : DRV_Z);
-    pin_out(s, p, 16, en ? DRV_BIT(!kernal) : DRV_Z);
-    pin_out(s, p, 17, en ? DRV_BIT(!basic) : DRV_Z);
-    pin_out(s, p, 18, en ? DRV_BIT(casram_high) : DRV_Z);
+    unsigned out = pla_logic(pla_read_inputs(s, p));
+    bool en = !pin_in(s, p, 19);            /* /OE, tied to GND */
+    for (int k = 0; k < PLA_NOUT; k++)
+        pin_out(s, p, pla_out_pin[k], en ? DRV_BIT((out >> k) & 1) : DRV_Z);
 }
 
 const part_type_t PT_82S100 = { "82S100 PLA",

@@ -2,14 +2,16 @@
  *
  * Left: the motherboard, drawn from the KiCad geometry. Chips are dark
  * boxes with their name, pins are small squares colored like a logic probe
- * would show them (see the legend). Mouse wheel zooms, dragging pans.
- * Clicking a pin selects it for the oscilloscope and opens a menu to break
- * it; clicking a chip lets you pull it out of its socket; clicking a
- * resistor or a ferrite bead lets you open or short it.
+ * would show them (see the legend). Mouse wheel zooms, dragging pans; the
+ * more you zoom, the more the chips show: pin numbers, then the gates of
+ * the logic chips (drawn by inspect.c) or the pin names. Clicking a pin
+ * selects it for the oscilloscope and opens a menu to break it; clicking a
+ * chip lets you pull it out of its socket or open the inspector; clicking
+ * a resistor or a ferrite bead lets you open or short it.
  *
  * Right: what the monitor shows, the oscilloscope and the controls. */
-#include "ui.h"
-#include "board_data.h"
+#include "ui_common.h"
+#include "inspect.h"
 #include "png.h"
 #include <dirent.h>
 #include <math.h>
@@ -33,39 +35,6 @@
 #define MON_H     311
 #define SCOPE_H   250
 
-/* Colors. */
-#define COL_PCB       nk_rgb(28, 88, 52)
-#define COL_PCB_EDGE  nk_rgb(10, 45, 25)
-#define COL_CHIP      nk_rgb(26, 26, 28)
-#define COL_CHIP_EDGE nk_rgb(100, 100, 108)
-#define COL_SOCKET    nk_rgb(200, 165, 90)
-#define COL_RES       nk_rgb(205, 182, 140)
-#define COL_LINK      nk_rgb(70, 70, 76)
-#define COL_OTHER     nk_rgb(60, 120, 80)
-#define COL_TEXT      nk_rgb(235, 235, 225)
-#define COL_DIMTEXT   nk_rgb(150, 160, 150)
-#define COL_HIGH      nk_rgb(240, 80, 60)
-#define COL_LOW       nk_rgb(70, 140, 255)
-#define COL_PULSE     nk_rgb(250, 210, 60)
-#define COL_FLOAT     nk_rgb(160, 160, 160)
-#define COL_FIGHT     nk_rgb(255, 60, 255)
-#define COL_NONE      nk_rgb(70, 70, 70)
-#define COL_FAULT     nk_rgb(255, 150, 0)
-#define COL_HOVER     nk_rgb(0, 255, 255)
-#define COL_TRACE     nk_rgb(90, 255, 120)
-
-/* Chip names are colored by role (see ROLE_* in board.h). */
-static const struct nk_color role_color[] = {
-    [ROLE_RAM]   = { 120, 195, 255, 255 },    /* the 8 DRAMs */
-    [ROLE_VRAM]  = { 225, 140, 255, 255 },    /* color RAM */
-    [ROLE_ROM]   = { 255, 195, 100, 255 },
-    [ROLE_PLA]   = { 255, 110, 140, 255 },
-    [ROLE_CHIP]  = { 240, 240, 230, 255 },    /* CPU, VIC, SID, CIAs */
-    [ROLE_GLUE]  = { 175, 195, 175, 255 },
-    [ROLE_CLOCK] = { 135, 140, 135, 255 },
-    [ROLE_OTHER] = { 235, 235, 225, 255 },
-};
-
 typedef struct { float x0, y0, x1, y1; } box_t;
 
 static struct {
@@ -77,10 +46,15 @@ static struct {
     int hover_pin, hover_part;
     bool dragging, drag_moved;
     float drag_x, drag_y;
-    /* Fault menu. */
+    /* Fault menu (a small window at the mouse, in screen coordinates). */
     bool menu_open;
     int menu_pin, menu_part, menu_frame;
     float menu_x, menu_y;
+    /* The RESET button kept pressed (the checkbox next to it). */
+    bool reset_hold;
+    /* Requested board view (--view): center in mm and zoom over the fit. */
+    bool view_set;
+    float view_cx, view_cy, view_zoom;
     /* Logic probe state of every net, refreshed every frame. */
     uint8_t *net_state;
     /* Monitor. */
@@ -111,67 +85,6 @@ static struct {
 /* ------------------------------------------------------------------------ */
 
 static sim_t *S(void) { return &U.b->sim; }
-
-static void text_centered(struct nk_command_buffer *cv, struct nk_context *ctx,
-                          struct nk_rect r, const char *txt, struct nk_color c) {
-    const struct nk_user_font *f = ctx->style.font;
-    float w = f->width(f->userdata, f->height, txt, (int)strlen(txt));
-    nk_draw_text(cv, nk_rect(r.x + (r.w - w) / 2, r.y + (r.h - f->height) / 2, w + 2, f->height),
-                 txt, (int)strlen(txt), f, nk_rgba(0, 0, 0, 0), c);
-}
-
-static float text_width(struct nk_context *ctx, const char *txt) {
-    const struct nk_user_font *f = ctx->style.font;
-    return f->width(f->userdata, f->height, txt, (int)strlen(txt));
-}
-
-static struct nk_color state_color(int st) {
-    switch (st) {
-    case NET_HIGH: return COL_HIGH;
-    case NET_LOW: return COL_LOW;
-    case NET_PULSING: return COL_PULSE;
-    case NET_FLOATING: return COL_FLOAT;
-    case NET_CONTENTION: return COL_FIGHT;
-    default: return COL_NONE;
-    }
-}
-
-static const char *state_name(int st) {
-    switch (st) {
-    case NET_HIGH: return "HIGH";
-    case NET_LOW: return "LOW";
-    case NET_PULSING: return "PULSING";
-    case NET_FLOATING: return "FLOATING";
-    case NET_CONTENTION: return "CONTENTION";
-    default: return "not connected";
-    }
-}
-
-static const char *pin_fault_name(int f) {
-    switch (f) {
-    case PF_OPEN: return "floating (open)";
-    case PF_GND: return "shorted to GND";
-    case PF_VCC: return "shorted to +5V";
-    default: return "working";
-    }
-}
-
-/* Short description of a pin: "U17.18 /CASRAM". */
-static void pin_desc(int pin, char *buf, size_t len) {
-    const pin_t *p = &S()->pins[pin];
-    const part_t *part = &S()->parts[p->part];
-    const char *name = sim_pin_name(S(), pin);
-    if (part->kind == PART_IC)
-        snprintf(buf, len, "%s.%s %s (%s)", part->ref, bd_pads[pin].name, name ? name : "",
-                 board_part_label(U.b, p->part));
-    else
-        snprintf(buf, len, "%s.%s %s", part->ref, bd_pads[pin].name, name ? name : "");
-}
-
-static const char *net_name(int pin) {
-    int net = S()->pins[pin].net;
-    return net >= 0 ? S()->nets[net].name : "(none)";
-}
 
 static bool pin_is_interactive(int pin) {
     const part_t *p = &S()->parts[S()->pins[pin].part];
@@ -306,6 +219,69 @@ static void draw_chip_name(struct nk_command_buffer *cv, struct nk_context *ctx,
     }
 }
 
+/* Pad squares big enough to write the pin number inside (see draw_pins). */
+static bool numbers_in_pads(struct nk_context *ctx) {
+    return 1.6f * U.zoom * 0.85f >= text_width(ctx, "40") + 4;
+}
+
+/* Inside a chip, depending on the zoom: the name; then also the pin
+ * numbers along the edges; zooming in more (numbers move into the pads)
+ * the gates of the logic chips, or the pin names of the others, with the
+ * name above the chip. */
+static void draw_chip_inside(struct nk_command_buffer *cv, struct nk_context *ctx, struct nk_rect area,
+                             struct nk_rect r, int i) {
+    part_t *p = &S()->parts[i];
+    float fh = ctx->style.font->height, pitch = 2.54f * U.zoom;
+    bool vertical = r.h > r.w;
+    if (!vertical || pitch < fh) { draw_chip_name(cv, ctx, r, i); return; }
+    /* Where each pin enters the body. */
+    pinpos_t pos[48] = {0};
+    for (int num = 1; num <= p->npins && num < 48; num++) {
+        int pin = part_pin(p, num);
+        if (pin < 0) continue;
+        float px = area.x + U.ox + bd_pads[pin].x * U.zoom, py = area.y + U.oy + bd_pads[pin].y * U.zoom;
+        int side = px < r.x + r.w / 2 ? -1 : 1;
+        pos[num] = (pinpos_t){ side < 0 ? r.x : r.x + r.w, py, side, true };
+    }
+    char lab[48];
+    snprintf(lab, sizeof(lab), "%s %s", p->ref, board_part_label(U.b, i));
+    struct nk_color tc = p->removed ? COL_SOCKET : role_color[board_part_role(U.b, i)];
+    if (numbers_in_pads(ctx)) {
+        if (!p->removed && chip_diagram(cv, ctx, U.b, U.net_state, i, r, pos, pitch)) {
+            text_centered(cv, ctx, nk_rect(r.x - 40, r.y - fh - 2, r.w + 80, fh), lab, tc);
+            return;
+        }
+        /* Pin names along the edges, if they fit in half the body. */
+        float name_w = 0;
+        for (int num = 1; num <= p->npins && num < 48; num++) {
+            const char *name = pos[num].valid ? sim_pin_name(S(), part_pin(p, num)) : NULL;
+            if (name && text_width(ctx, name) > name_w) name_w = text_width(ctx, name);
+        }
+        if (name_w + 6 < r.w / 2) {
+            for (int num = 1; num <= p->npins && num < 48; num++) {
+                const char *name = pos[num].valid ? sim_pin_name(S(), part_pin(p, num)) : NULL;
+                if (name) text_at(cv, ctx, pos[num].x - pos[num].side * 4, pos[num].y, pos[num].side > 0, name, COL_DIMTEXT);
+            }
+            float center = r.w - 2 * (name_w + 8);
+            if (center > 12) draw_chip_name(cv, ctx, nk_rect(r.x + name_w + 8, r.y, center, r.h), i);
+            else text_centered(cv, ctx, nk_rect(r.x - 40, r.y - fh - 2, r.w + 80, fh), lab, tc);
+            return;
+        }
+        draw_chip_name(cv, ctx, r, i);
+        return;
+    }
+    /* Pin numbers along the edges, the name in what is left in the middle. */
+    float num_w = text_width(ctx, "40") + 4, center = r.w - 2 * num_w;
+    if (center < 10) { draw_chip_name(cv, ctx, r, i); return; }
+    for (int num = 1; num <= p->npins && num < 48; num++) {
+        if (!pos[num].valid) continue;
+        char txt[8];
+        snprintf(txt, sizeof(txt), "%d", num);
+        text_at(cv, ctx, pos[num].x - pos[num].side * 2, pos[num].y, pos[num].side > 0, txt, COL_DIMTEXT);
+    }
+    draw_chip_name(cv, ctx, nk_rect(r.x + num_w, r.y, center, r.h), i);
+}
+
 static void draw_part(struct nk_command_buffer *cv, struct nk_context *ctx, struct nk_rect area, int i) {
     sim_t *s = S();
     part_t *p = &s->parts[i];
@@ -331,7 +307,7 @@ static void draw_part(struct nk_command_buffer *cv, struct nk_context *ctx, stru
             float cx = fminf(fmaxf(px, r.x + 6), r.x + r.w - 6), cy = fminf(fmaxf(py, r.y + 6), r.y + r.h - 6);
             nk_fill_circle(cv, nk_rect(cx - 3, cy - 3, 6, 6), p->removed ? COL_SOCKET : COL_CHIP_EDGE);
         }
-        draw_chip_name(cv, ctx, r, i);
+        draw_chip_inside(cv, ctx, area, r, i);
         break;
     }
     case PART_RESISTOR:
@@ -345,10 +321,16 @@ static void draw_part(struct nk_command_buffer *cv, struct nk_context *ctx, stru
         if (r.w > text_width(ctx, p->ref) + 4 && r.h > ctx->style.font->height)
             text_centered(cv, ctx, r, p->ref, p->kind == PART_LINK ? COL_TEXT : nk_rgb(40, 30, 20));
         break;
-    case PART_CONNECTOR:
+    case PART_CONNECTOR: {
         nk_stroke_rect(cv, r, 0, 1, COL_DIMTEXT);
-        if (r.w > text_width(ctx, p->ref) + 4) text_centered(cv, ctx, nk_rect(r.x, r.y - 14, r.w, 14), p->ref, COL_DIMTEXT);
+        /* "CN4 SERIAL" if it fits, else just "CN4". */
+        char lab[48];
+        const char *cname = board_connector_name(U.b, i);
+        snprintf(lab, sizeof(lab), "%s %s", p->ref, cname ? cname : "");
+        if (!cname || text_width(ctx, lab) > r.w + 30) snprintf(lab, sizeof(lab), "%s", p->ref);
+        if (r.w + 30 > text_width(ctx, lab)) text_centered(cv, ctx, nk_rect(r.x - 15, r.y - 14, r.w + 30, 14), lab, COL_DIMTEXT);
         break;
+    }
     default:
         if (sim) {      /* the crystal */
             nk_fill_rect(cv, r, 2, nk_rgb(170, 170, 180));
@@ -360,8 +342,9 @@ static void draw_part(struct nk_command_buffer *cv, struct nk_context *ctx, stru
     }
 }
 
-static void draw_pins(struct nk_command_buffer *cv, struct nk_rect area) {
+static void draw_pins(struct nk_command_buffer *cv, struct nk_context *ctx, struct nk_rect area) {
     sim_t *s = S();
+    float ctx_font_h = ctx->style.font->height;
     int hover_root = U.hover_pin >= 0 ? s->pins[U.hover_pin].root : -2;
     for (int i = 0; i < s->npins; i++) {
         const bd_pad_t *bp = &bd_pads[i];
@@ -384,6 +367,9 @@ static void draw_pins(struct nk_command_buffer *cv, struct nk_rect area) {
                 nk_stroke_line(cv, r.x + r.w, r.y, r.x, r.y + r.h, 1.5f, nk_rgb(0, 0, 0));
             }
         }
+        /* The pin number (or letter) inside the pad, when it fits. */
+        if (!removed && sz >= ctx_font_h - 1 && sz >= text_width(ctx, bp->name) + 3)
+            text_centered(cv, ctx, r, bp->name, nk_rgb(0, 0, 0));
         if (p->root == hover_root && p->root >= 0)
             nk_stroke_rect(cv, nk_rect(r.x - 1, r.y - 1, r.w + 2, r.h + 2), 0, 1.5f, COL_HOVER);
         if (i == U.b->scope_pin)
@@ -402,6 +388,8 @@ static void board_input(struct nk_context *ctx, struct nk_rect area) {
     float mx = (in->mouse.pos.x - area.x - U.ox) / U.zoom;
     float my = (in->mouse.pos.y - area.y - U.oy) / U.zoom;
     bool inside = nk_input_is_mouse_hovering_rect(in, area) && nk_window_is_hovered(ctx);
+    struct nk_rect ir;     /* the inspector floats above the board */
+    if (inspect_bounds(&ir) && nk_input_is_mouse_hovering_rect(in, ir)) inside = false;
     U.hover_pin = U.hover_part = -1;
     if (U.menu_open) return;
     if (inside) {
@@ -433,8 +421,8 @@ static void board_input(struct nk_context *ctx, struct nk_rect area) {
                 U.menu_open = true;
                 U.menu_pin = U.hover_pin;
                 U.menu_part = U.hover_part;
-                U.menu_x = in->mouse.pos.x - area.x + 10;
-                U.menu_y = in->mouse.pos.y - area.y + 10;
+                U.menu_x = in->mouse.pos.x + 10;
+                U.menu_y = in->mouse.pos.y + 10;
                 U.menu_frame = (int)U.frame;
                 if (U.hover_pin >= 0) select_pin(U.hover_pin);
             }
@@ -447,16 +435,30 @@ static bool option(struct nk_context *ctx, const char *label, bool active) {
     return nk_option_label(ctx, label, active) && !active;
 }
 
-static void fault_menu(struct nk_context *ctx, struct nk_rect area) {
+/* The menu of a pin or a part, at the mouse. A window of its own, so it
+ * opens from the board and from the inspector alike. */
+static void fault_menu(struct nk_context *ctx) {
     if (!U.menu_open) return;
     sim_t *s = S();
-    char title[128];
+    char title[128], info[128] = "";
     int rows;
-    bool power = false, pullup = false;
+    bool power = false, pullup = false, faultable = true;
     if (U.menu_pin >= 0) {
-        pin_desc(U.menu_pin, title, sizeof(title));
-        power = (s->pins[U.menu_pin].flags & PIN_POWER) != 0;
-        rows = power ? 2 : 4;
+        const pin_t *pp = &s->pins[U.menu_pin];
+        pin_desc(U.b, U.menu_pin, title, sizeof(title));
+        power = (pp->flags & PIN_POWER) != 0;
+        /* A connector pin on a rail or on a part of the board that isn't
+         * simulated (video output, power supply): nothing to break. */
+        if (s->parts[pp->part].kind == PART_CONNECTOR) {
+            if (pp->net < 0 || !board_net_simulated(U.b, pp->net)) {
+                faultable = false;
+                snprintf(info, sizeof(info), "not simulated (analog or power part)");
+            } else if (s->nets[s->nets[pp->net].root].rail) {
+                faultable = false;
+                snprintf(info, sizeof(info), "power rail: break the chips' power pins");
+            }
+        }
+        rows = !faultable ? 1 : power ? 2 : 4;
     } else {
         part_t *p = &s->parts[U.menu_part];
         snprintf(title, sizeof(title), "%s %s", p->ref, board_part_label(U.b, U.menu_part));
@@ -464,49 +466,80 @@ static void fault_menu(struct nk_context *ctx, struct nk_rect area) {
             resistor_state_t *st = p->state;
             for (int i = 0; i < st->nel; i++) if (st->el[i].type == EL_PULLUP) pullup = true;
         }
-        rows = p->kind == PART_IC ? 2 : (pullup ? 3 : 2);
+        rows = p->kind == PART_IC ? 3 : (pullup ? 3 : 2);
     }
-    float w = 240, h = 34 + rows * 24 + (U.menu_pin >= 0 ? 22 : 0);
-    float x = fminf(U.menu_x, area.w - w - 4), y = fminf(U.menu_y, area.h - h - 4);
+    float w = fmaxf(260, fmaxf(text_width(ctx, title), text_width(ctx, info)) + 30);
+    float h = 46 + rows * 24 + (U.menu_pin >= 0 ? 22 : 0);
+    float x = fminf(U.menu_x, sapp_widthf() - w - 4), y = fminf(U.menu_y, sapp_heightf() - h - 4);
     struct nk_rect r = nk_rect(x, y, w, h);
-    if (!nk_popup_begin(ctx, NK_POPUP_STATIC, "fault", NK_WINDOW_NO_SCROLLBAR, r)) { U.menu_open = false; return; }
-    nk_layout_row_dynamic(ctx, 20, 1);
-    nk_label(ctx, title, NK_TEXT_LEFT);
-    if (U.menu_pin >= 0) {
-        int pin = U.menu_pin, f = s->pins[pin].fault;
-        char net[96];
-        snprintf(net, sizeof(net), "net %s", net_name(pin));
-        nk_label_colored(ctx, net, NK_TEXT_LEFT, COL_DIMTEXT);
-        nk_layout_row_dynamic(ctx, 22, 1);
-        if (option(ctx, "Working", f == PF_OK)) { board_set_pin_fault(U.b, pin, PF_OK); U.menu_open = false; }
-        if (option(ctx, "Floating (open, lifted leg)", f == PF_OPEN)) { board_set_pin_fault(U.b, pin, PF_OPEN); U.menu_open = false; }
-        if (!power) {
-            if (option(ctx, "Shorted to GND", f == PF_GND)) { board_set_pin_fault(U.b, pin, PF_GND); U.menu_open = false; }
-            if (option(ctx, "Shorted to +5V", f == PF_VCC)) { board_set_pin_fault(U.b, pin, PF_VCC); U.menu_open = false; }
-        }
-    } else {
-        int part = U.menu_part;
-        part_t *p = &s->parts[part];
-        nk_layout_row_dynamic(ctx, 22, 1);
-        if (p->kind == PART_IC) {
-            if (option(ctx, "In its socket", !p->removed)) { board_set_removed(U.b, part, false); U.menu_open = false; }
-            if (option(ctx, "Pulled out of the socket", p->removed)) { board_set_removed(U.b, part, true); U.menu_open = false; }
-        } else {
-            int f = p->rfault;
-            if (option(ctx, "Working", f == RF_OK)) { board_set_rfault(U.b, part, RF_OK); U.menu_open = false; }
-            if (option(ctx, p->kind == PART_OTHER ? "Broken (no oscillation)" : "Open", f == RF_OPEN)) {
-                board_set_rfault(U.b, part, RF_OPEN); U.menu_open = false;
+    nk_window_set_bounds(ctx, "Menu", r);
+    if (nk_begin(ctx, "Menu", r, NK_WINDOW_BORDER | NK_WINDOW_NO_SCROLLBAR)) {
+        nk_layout_row_dynamic(ctx, 20, 1);
+        nk_label(ctx, title, NK_TEXT_LEFT);
+        if (U.menu_pin >= 0) {
+            int pin = U.menu_pin, f = s->pins[pin].fault;
+            char net[96];
+            snprintf(net, sizeof(net), "net %s", pin_net_name(U.b, pin));
+            nk_label_colored(ctx, net, NK_TEXT_LEFT, COL_DIMTEXT);
+            nk_layout_row_dynamic(ctx, 22, 1);
+            if (!faultable) {
+                nk_label_colored(ctx, info, NK_TEXT_LEFT, COL_DIMTEXT);
+            } else {
+                if (option(ctx, "Working", f == PF_OK)) { board_set_pin_fault(U.b, pin, PF_OK); U.menu_open = false; }
+                if (option(ctx, "Floating (open, lifted leg)", f == PF_OPEN)) { board_set_pin_fault(U.b, pin, PF_OPEN); U.menu_open = false; }
+                if (!power) {
+                    if (option(ctx, "Shorted to GND", f == PF_GND)) { board_set_pin_fault(U.b, pin, PF_GND); U.menu_open = false; }
+                    if (option(ctx, "Shorted to +5V", f == PF_VCC)) { board_set_pin_fault(U.b, pin, PF_VCC); U.menu_open = false; }
+                }
             }
-            if (pullup && option(ctx, "Shorted", f == RF_SHORT)) { board_set_rfault(U.b, part, RF_SHORT); U.menu_open = false; }
+        } else {
+            int part = U.menu_part;
+            part_t *p = &s->parts[part];
+            nk_layout_row_dynamic(ctx, 22, 1);
+            if (p->kind == PART_IC) {
+                if (option(ctx, "In its socket", !p->removed)) { board_set_removed(U.b, part, false); U.menu_open = false; }
+                if (option(ctx, "Pulled out of the socket", p->removed)) { board_set_removed(U.b, part, true); U.menu_open = false; }
+                if (nk_button_label(ctx, "Inspect: pins, gates, live states")) { inspect_open(U.b, part); U.menu_open = false; }
+            } else {
+                int f = p->rfault;
+                if (option(ctx, "Working", f == RF_OK)) { board_set_rfault(U.b, part, RF_OK); U.menu_open = false; }
+                if (option(ctx, p->kind == PART_OTHER ? "Broken (no oscillation)" : "Open", f == RF_OPEN)) {
+                    board_set_rfault(U.b, part, RF_OPEN); U.menu_open = false;
+                }
+                if (pullup && option(ctx, "Shorted", f == RF_SHORT)) { board_set_rfault(U.b, part, RF_SHORT); U.menu_open = false; }
+            }
         }
     }
+    nk_end(ctx);
+    if ((int)U.frame == U.menu_frame) nk_window_set_focus(ctx, "Menu");
     /* Clicking outside the menu closes it. */
-    struct nk_rect screen_r = nk_rect(area.x + x, area.y + y, w, h);
     if ((int)U.frame > U.menu_frame + 1 && nk_input_is_mouse_pressed(&ctx->input, NK_BUTTON_LEFT) &&
-        !nk_input_is_mouse_hovering_rect(&ctx->input, screen_r))
+        !nk_input_is_mouse_hovering_rect(&ctx->input, r))
         U.menu_open = false;
-    if (!U.menu_open) nk_popup_close(ctx);
-    nk_popup_end(ctx);
+}
+
+/* The tooltip next to the mouse on the board: what the pin or part is. */
+static void board_tooltip(struct nk_context *ctx) {
+    if (U.menu_open || U.dragging) return;
+    char tip[256];
+    if (U.hover_pin >= 0) {
+        char pd[128];
+        pin_desc(U.b, U.hover_pin, pd, sizeof(pd));
+        int net = S()->pins[U.hover_pin].net;
+        bool sim = board_net_simulated(U.b, net);
+        snprintf(tip, sizeof(tip), "%s   net %s: %s", pd, pin_net_name(U.b, U.hover_pin),
+                 !sim ? "not simulated" : net >= 0 ? state_name(U.net_state[net]) : "-");
+    } else if (U.hover_part >= 0) {
+        const part_t *hp = &S()->parts[U.hover_part];
+        if (hp->kind == PART_IC)
+            snprintf(tip, sizeof(tip), "%s %s: %s", hp->ref, board_part_label(U.b, U.hover_part),
+                     board_part_detail(U.b, U.hover_part));
+        else
+            snprintf(tip, sizeof(tip), "%s %s", hp->ref, board_part_label(U.b, U.hover_part));
+    } else {
+        return;
+    }
+    nk_tooltip(ctx, tip);
 }
 
 static void board_window(struct nk_context *ctx, float w, float h) {
@@ -515,6 +548,12 @@ static void board_window(struct nk_context *ctx, float w, float h) {
         struct nk_rect area = nk_window_get_content_region(ctx);
         struct nk_command_buffer *cv = nk_window_get_canvas(ctx);
         if (!U.fitted) fit_view(area);
+        if (U.view_set) {       /* --view: center on a point of the board */
+            U.zoom *= U.view_zoom;
+            U.ox = area.w / 2 - U.view_cx * U.zoom;
+            U.oy = area.h / 2 - U.view_cy * U.zoom;
+            U.view_set = false;
+        }
         board_input(ctx, area);
         nk_push_scissor(cv, area);
         nk_fill_rect(cv, area, 0, nk_rgb(32, 34, 36));
@@ -525,12 +564,12 @@ static void board_window(struct nk_context *ctx, float w, float h) {
         for (int pass = 0; pass < 2; pass++)          /* passives below, chips above */
             for (int i = 0; i < s->nparts; i++)
                 if ((s->parts[i].kind == PART_IC) == (pass == 1)) draw_part(cv, ctx, area, i);
-        draw_pins(cv, area);
+        draw_pins(cv, ctx, area);
         if (U.hover_part >= 0) {
             box_t *b = &U.box[U.hover_part];
             nk_stroke_rect(cv, to_screen(area, b->x0, b->y0, b->x1, b->y1), 2, 2, COL_HOVER);
         }
-        fault_menu(ctx, area);
+        board_tooltip(ctx);
     }
     nk_end(ctx);
 }
@@ -629,8 +668,8 @@ static void scope_window(struct nk_context *ctx, float x, float y, float h) {
         char label[160] = "click a pin on the board";
         if (U.b->scope_pin >= 0) {
             char pd[96];
-            pin_desc(U.b->scope_pin, pd, sizeof(pd));
-            snprintf(label, sizeof(label), "%s   net %s", pd, net_name(U.b->scope_pin));
+            pin_desc(U.b, U.b->scope_pin, pd, sizeof(pd));
+            snprintf(label, sizeof(label), "%s   net %s", pd, pin_net_name(U.b, U.b->scope_pin));
         }
         nk_layout_row_begin(ctx, NK_STATIC, 22, 3);
         nk_layout_row_push(ctx, 250);
@@ -716,7 +755,7 @@ static void fault_list(struct nk_context *ctx) {
     for (int i = 0; i < s->npins; i++) {
         if (s->pins[i].fault == PF_OK) continue;
         char pd[96];
-        pin_desc(i, pd, sizeof(pd));
+        pin_desc(U.b, i, pd, sizeof(pd));
         snprintf(line, sizeof(line), "%s: %s", pd, pin_fault_name(s->pins[i].fault));
         nk_layout_row_push(ctx, 340); nk_label(ctx, line, NK_TEXT_LEFT);
         nk_layout_row_push(ctx, 70);
@@ -758,12 +797,31 @@ static void controls_window(struct nk_context *ctx, float x, float y, float h) {
     if (nk_begin(ctx, "Controls", r, NK_WINDOW_TITLE | NK_WINDOW_BORDER)) {
         board_t *b = U.b;
         nk_layout_row_dynamic(ctx, 26, 4);
+        if (nk_widget_is_hovered(ctx)) nk_tooltip(ctx, "Switch the C64 off and on again: a restart (the faults stay)");
         if (nk_button_label(ctx, "Power cycle")) { board_power_on(b); select_pin(b->scope_pin); }
+        if (nk_widget_is_hovered(ctx)) nk_tooltip(ctx, "Undo every fault");
         if (nk_button_label(ctx, "Repair all")) board_clear_faults(b);
         if (nk_button_label(ctx, U.paused ? "Resume" : "Pause")) U.paused = !U.paused;
         nk_bool warp = U.warp;
         nk_checkbox_label(ctx, "Warp", &warp);
         U.warp = warp;
+        /* RESET: pressed while the mouse holds it, or kept pressed. It
+         * shorts /RESET to GND on the user port, like a reset cartridge:
+         * the CPU, the CIAs and the SID reset, the VIC (no reset pin) and
+         * the RAM don't. */
+        nk_layout_row_begin(ctx, NK_STATIC, 26, 2);
+        nk_layout_row_push(ctx, 140);
+        if (nk_widget_is_hovered(ctx))
+            nk_tooltip(ctx, "Hold to press RESET: shorts /RESET to GND (user port pin 3 to pin 1)");
+        nk_button_push_behavior(ctx, NK_BUTTON_REPEATER);
+        bool down = nk_button_label(ctx, b->reset_button ? "RESET pressed" : "RESET");
+        nk_button_pop_behavior(ctx);
+        nk_layout_row_push(ctx, 150);
+        nk_bool hold = U.reset_hold;
+        nk_checkbox_label(ctx, "keep it pressed", &hold);
+        U.reset_hold = hold;
+        nk_layout_row_end(ctx);
+        if ((down || U.reset_hold) != b->reset_button) board_set_reset_button(b, down || U.reset_hold);
         char info[200];
         snprintf(info, sizeof(info), "speed %.0f%%   time %.2f s   CPU %s",
                  U.speed * 100, (double)b->sim.cycle / C64_FREQ,
@@ -775,9 +833,9 @@ static void controls_window(struct nk_context *ctx, float x, float y, float h) {
         char hover[220] = "";
         if (U.hover_pin >= 0) {
             char pd[96];
-            pin_desc(U.hover_pin, pd, sizeof(pd));
+            pin_desc(U.b, U.hover_pin, pd, sizeof(pd));
             int net = S()->pins[U.hover_pin].net;
-            snprintf(hover, sizeof(hover), "%s  net %s  %s", pd, net_name(U.hover_pin),
+            snprintf(hover, sizeof(hover), "%s  net %s  %s", pd, pin_net_name(U.b, U.hover_pin),
                      net >= 0 ? state_name(U.net_state[net]) : "");
         } else if (U.hover_part >= 0) {
             const part_t *hp = &S()->parts[U.hover_part];
@@ -919,7 +977,6 @@ void ui_frame(void) {
     update_status();
     /* Logic probe state for the pin colors, from this frame's samples. */
     for (int i = 0; i < S()->nnets; i++) U.net_state[i] = (uint8_t)board_net_state(U.b, i);
-    board_stats_reset(U.b);
 
     struct nk_context *ctx = snk_new_frame();
     /* Make checked checkboxes visible with the default style. */
@@ -933,6 +990,19 @@ void ui_frame(void) {
     float ctrl_h = H - y - SCOPE_H;
     controls_window(ctx, bw, y, ctrl_h);
     scope_window(ctx, bw, y + ctrl_h, SCOPE_H);
+    int clicked = inspect_window(ctx, U.b, U.net_state, nk_rect(0, 0, bw, H));
+    if (clicked >= 0) {         /* a pin clicked in the inspector */
+        select_pin(clicked);
+        U.menu_open = true;
+        U.menu_pin = clicked;
+        U.menu_part = -1;
+        U.menu_x = ctx->input.mouse.pos.x + 10;
+        U.menu_y = ctx->input.mouse.pos.y + 10;
+        U.menu_frame = (int)U.frame;
+    }
+    fault_menu(ctx);
+    /* Start the statistics over (the drawing above read this frame's). */
+    board_stats_reset(U.b);
     unlock_board();
 
     sg_begin_pass(&(sg_pass){ .action = { .colors[0] = { .load_action = SG_LOADACTION_CLEAR,
@@ -1011,6 +1081,7 @@ void ui_init(board_t *b, const char *prg, const char *scope_pin) {
     U.timebase = 1;
     U.autoload = prg;
     U.net_state = calloc(b->sim.nnets, 1);
+    b->pin_stats = true;        /* what each pin drives, for the inspector */
     compute_boxes();
     U.img = sg_make_image(&(sg_image_desc){ .width = SCREEN_W, .height = SCREEN_H,
                                             .pixel_format = SG_PIXELFORMAT_RGBA8,
@@ -1035,6 +1106,23 @@ void ui_init(board_t *b, const char *prg, const char *scope_pin) {
 void ui_shutdown(void) {
     atomic_store(&sim_quit, true);
     pthread_join(sim_thread, NULL);
+}
+
+/* Open the inspector on a chip by reference ("U8"), for --inspect. */
+void ui_inspect(const char *ref) {
+    lock_board();
+    int part = sim_find_part(S(), ref);
+    if (part >= 0) inspect_open(U.b, part);
+    else fprintf(stderr, "no part %s\n", ref);
+    unlock_board();
+}
+
+/* Center the board view on (cx, cy) mm, zoom times the "fit" zoom. */
+void ui_view(float cx, float cy, float zoom) {
+    U.view_set = true;
+    U.view_cx = cx;
+    U.view_cy = cy;
+    U.view_zoom = zoom;
 }
 
 /* Emulated video frames since power on (50 per second). */

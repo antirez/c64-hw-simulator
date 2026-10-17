@@ -109,6 +109,20 @@ typedef struct board {
     /* Logic probe statistics per net, reset by the UI every frame. */
     uint32_t *st_hi, *st_lo, *st_float, *st_fight;
     int st_countdown;
+    /* Also sampled when pin_stats is set (the UI does): what each pin
+     * itself drives, which can differ from its net (a lifted leg, two
+     * outputs fighting, an open collector), and how often each product
+     * term of the PLA is true. Reading them changes nothing simulated. */
+    bool pin_stats;
+    uint32_t *pst_hi, *pst_lo, *pst_off, *pst_weak;
+    uint32_t pla_hits[64], pla_samples;
+    int p_pla;
+    /* The RESET button: a switch from user port pin 3 (/RESET) to pin 1
+     * (GND), like a reset cartridge. */
+    bool reset_button;
+    int pin_reset, pin_reset_gnd;
+    /* Connectors: what each pin is for ("ATN"), NULL for other parts. */
+    const char **pin_func;
 } board_t;
 
 board_t *board_create(void);
@@ -121,6 +135,9 @@ void board_set_removed(board_t *b, int part, bool removed);
 void board_set_rfault(board_t *b, int part, int rfault);
 void board_clear_faults(board_t *b);
 bool board_apply_fault_spec(board_t *b, const char *spec);
+/* Press or release the RESET button (also as the spec "RESET:pressed" /
+ * "RESET:released"). It is not a fault: Repair all doesn't release it. */
+void board_set_reset_button(board_t *b, bool pressed);
 bool board_part_simulated(board_t *b, int part);
 /* Short name drawn on a chip ("RAM1", "PLA"...), the lines shown under it
  * when zooming in (model, address range), a one line description, and its
@@ -130,6 +147,15 @@ const char *board_part_label(board_t *b, int part);
 const char *board_part_info(board_t *b, int part);
 const char *board_part_detail(board_t *b, int part);
 int board_part_role(board_t *b, int part);
+/* Connectors: name ("SERIAL") and the function of a pin ("ATN"), or NULL. */
+const char *board_connector_name(board_t *b, int part);
+const char *board_pin_func(board_t *b, int pin);
+/* Is this net simulated? False for the analog and power parts of the
+ * board (video output, power supply...), true for the supply rails. */
+bool board_net_simulated(board_t *b, int net);
+/* What a pin itself drives over the last frame, as a NET_* state
+ * (NET_FLOATING: it drives nothing). Needs pin_stats. */
+int board_pin_drive_state(board_t *b, int pin);
 
 /* Keyboard (C64 key codes, as c64-llm). */
 void board_key_down(board_t *b, int key);
