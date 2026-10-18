@@ -5,8 +5,9 @@
     MOS Technology 6569 emulator (aka VIC-II for PAL-B)
 
     ALTERED VERSION, modified for c64-hw-sim: the tick can also run in two
-    halves, m6569_tick_fetch() and m6569_tick_finish() (see below). This is
-    not the original file by Andre Weissflog.
+    halves, m6569_tick_fetch() and m6569_tick_finish() (see below), and the
+    border comparators are valid from power on (see the border unit reset).
+    This is not the original file by Andre Weissflog.
 
     Do this:
     ~~~C
@@ -423,6 +424,7 @@ static void _m6569_init_crt(m6569_crt_t* crt, const m6569_desc_t* desc) {
     crt->vis_y1 = crt->vis_y0 + crt->vis_h;
 }
 
+static void _m6569_reset_border_unit(m6569_border_unit_t* b);
 void m6569_init(m6569_t* vic, const m6569_desc_t* desc) {
     CHIPS_ASSERT(vic && desc);
     memset(vic, 0, sizeof(*vic));
@@ -431,6 +433,7 @@ void m6569_init(m6569_t* vic, const m6569_desc_t* desc) {
     vic->mem.user_data = desc->user_data;
     vic->crt_set_pixel = desc->crt_set_pixel;
     vic->crt_set_pixel_fb = desc->crt_set_pixel_fb;
+    _m6569_reset_border_unit(&vic->brd);    // c64-hw-sim, see there
 }
 
 /*--- reset ------------------------------------------------------------------*/
@@ -471,6 +474,14 @@ static void _m6569_reset_sprite_unit(m6569_sprite_unit_t* su) {
 
 static void _m6569_reset_border_unit(m6569_border_unit_t* b) {
     b->main = b->vert = false;
+    // c64-hw-sim: on the chip the border comparators are wired to the RSEL
+    // and CSEL bits, so they are valid from power on (RSEL=CSEL=0 here).
+    // The original set them only when $D011/$D016 were written: a program
+    // that never writes $D016 (Dead Test's flash codes) had no border.
+    b->top = _M6569_RSEL0_BORDER_TOP;
+    b->bottom = _M6569_RSEL0_BORDER_BOTTOM;
+    b->left = _M6569_CSEL0_BORDER_LEFT;
+    b->right = _M6569_CSEL0_BORDER_RIGHT;
 }
 
 static void _m6569_reset_crt(m6569_crt_t* c) {
