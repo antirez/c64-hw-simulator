@@ -322,13 +322,23 @@ static void draw_part(struct nk_command_buffer *cv, struct nk_context *ctx, stru
             text_centered(cv, ctx, r, p->ref, p->kind == PART_LINK ? COL_TEXT : nk_rgb(40, 30, 20));
         break;
     case PART_CONNECTOR: {
+        /* A cartridge in the expansion port: a board under the pins. */
+        const char *cart = i == U.b->p_cn6 ? board_cart_name(U.b) : NULL;
+        if (cart) {
+            nk_fill_rect(cv, nk_rect(r.x - 6, r.y - 6, r.w + 12, r.h + 12), 3, nk_rgb(60, 50, 40));
+            nk_stroke_rect(cv, nk_rect(r.x - 6, r.y - 6, r.w + 12, r.h + 12), 3, 2, COL_SOCKET);
+        }
         nk_stroke_rect(cv, r, 0, 1, COL_DIMTEXT);
         /* "CN4 SERIAL" if it fits, else just "CN4". */
-        char lab[48];
+        char lab[96];
         const char *cname = board_connector_name(U.b, i);
-        snprintf(lab, sizeof(lab), "%s %s", p->ref, cname ? cname : "");
-        if (!cname || text_width(ctx, lab) > r.w + 30) snprintf(lab, sizeof(lab), "%s", p->ref);
-        if (r.w + 30 > text_width(ctx, lab)) text_centered(cv, ctx, nk_rect(r.x - 15, r.y - 14, r.w + 30, 14), lab, COL_DIMTEXT);
+        if (cart) snprintf(lab, sizeof(lab), "%s cartridge: %s", p->ref, cart);
+        else snprintf(lab, sizeof(lab), "%s %s", p->ref, cname ? cname : "");
+        if (!cart && (!cname || text_width(ctx, lab) > r.w + 30)) snprintf(lab, sizeof(lab), "%s", p->ref);
+        if (cart)       /* always shown: a cartridge is easy to forget */
+            text_centered(cv, ctx, nk_rect(r.x - 100, r.y - 22, r.w + 200, 14), lab, COL_SOCKET);
+        else if (r.w + 30 > text_width(ctx, lab))
+            text_centered(cv, ctx, nk_rect(r.x - 15, r.y - 14, r.w + 30, 14), lab, COL_DIMTEXT);
         break;
     }
     default:
@@ -717,7 +727,8 @@ static void scan_dir(void) {
             U.entry_is_dir[U.nentries++] = true;
         } else {
             size_t n = strlen(e->d_name);
-            if (n > 4 && !strcasecmp(e->d_name + n - 4, ".prg")) snprintf(files[nfiles++], 256, "%s", e->d_name);
+            if (n > 4 && (!strcasecmp(e->d_name + n - 4, ".prg") || !strcasecmp(e->d_name + n - 4, ".crt")))
+                snprintf(files[nfiles++], 256, "%s", e->d_name);
         }
     }
     closedir(d);
@@ -742,9 +753,15 @@ static void enter_dir(const char *name) {
     scan_dir();
 }
 
+/* A .prg goes into RAM; a .crt cartridge into the expansion port. */
 static void load_prg(const char *path, bool run) {
     snprintf(U.path, sizeof(U.path), "%s", path);
-    board_load_prg(U.b, path, run, U.status, sizeof(U.status));
+    size_t n = strlen(path);
+    if (n > 4 && !strcasecmp(path + n - 4, ".crt")) {
+        if (board_insert_cart(U.b, path, U.status, sizeof(U.status))) select_pin(U.b->scope_pin);
+    } else {
+        board_load_prg(U.b, path, run, U.status, sizeof(U.status));
+    }
 }
 
 static void fault_list(struct nk_context *ctx) {
@@ -861,7 +878,19 @@ static void controls_window(struct nk_context *ctx, float x, float y, float h) {
             fault_list(ctx);
             nk_tree_pop(ctx);
         }
-        if (nk_tree_push(ctx, NK_TREE_TAB, "Load a program", NK_MAXIMIZED)) {
+        if (nk_tree_push(ctx, NK_TREE_TAB, "Programs and cartridges", NK_MAXIMIZED)) {
+            const char *cart = board_cart_name(b);
+            if (cart) {
+                char line[96];
+                snprintf(line, sizeof(line), "Cartridge in the expansion port: %s", cart);
+                nk_layout_row_begin(ctx, NK_STATIC, 22, 2);
+                nk_layout_row_push(ctx, 330);
+                nk_label_colored(ctx, line, NK_TEXT_LEFT, COL_SOCKET);
+                nk_layout_row_push(ctx, 80);
+                if (nk_widget_is_hovered(ctx)) nk_tooltip(ctx, "Pull the cartridge out (the C64 is switched off and on)");
+                if (nk_button_label(ctx, "remove")) { board_remove_cart(b); select_pin(b->scope_pin); }
+                nk_layout_row_end(ctx);
+            }
             nk_layout_row_begin(ctx, NK_STATIC, 24, 3);
             nk_layout_row_push(ctx, 250);
             nk_edit_string_zero_terminated(ctx, NK_EDIT_FIELD, U.path, sizeof(U.path), nk_filter_default);
@@ -871,7 +900,7 @@ static void controls_window(struct nk_context *ctx, float x, float y, float h) {
             if (nk_button_label(ctx, "Load+RUN")) load_prg(U.path, true);
             nk_layout_row_end(ctx);
             nk_layout_row_dynamic(ctx, 20, 1);
-            nk_label_colored(ctx, U.status[0] ? U.status : "or drop a .prg file on the window",
+            nk_label_colored(ctx, U.status[0] ? U.status : "or drop a .prg or .crt file on the window",
                              NK_TEXT_LEFT, COL_DIMTEXT);
             nk_label(ctx, U.dir, NK_TEXT_LEFT);
             nk_layout_row_dynamic(ctx, 140, 1);

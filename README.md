@@ -111,6 +111,13 @@ The control panel also loads .prg files. They are written straight into
 the DRAM chips, as a freezer cartridge would do it, so loading works on a
 broken board too.
 
+It also plugs .crt cartridges into the expansion port (the C64 is switched
+off and on, as you would do). The plain ones are supported, 8K, 16K and
+Ultimax, which is what the diagnostic cartridges are: Dead Test replaces
+the KERNAL and runs on boards with dead RAM or ROMs. A cartridge only
+drives the expansion port pins, everything else is the board: a dirty
+contact on the port is a fault on a CN6 pin.
+
 Type on your keyboard as usual. ESC is RUN/STOP, PgUp is RESTORE, TAB is
 CTRL, and left ALT is C=.
 
@@ -122,7 +129,9 @@ This runs four seconds (200 frames) without a window. It prints the text
 read from the monitor picture, as a person would read it, and saves the
 picture. A fault is written `REF:what` or `REF.PIN:what`:
 
-    U17:removed   U21.14:gnd   U12.14:vcc   U9.2:open   R51:open   RP4:short
+    U17:removed   U21.14:gnd   U12.14:vcc   U9.2:open   CN6.B:open   RP4:short
+
+A .crt file given on the command line is plugged in before power on.
 
 Other options:
 

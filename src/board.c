@@ -126,12 +126,14 @@ static void check_report(board_t *b, const char *what, uint16_t addr, uint8_t go
 
 static void check_cpu_read(board_t *b, uint64_t pins) {
     uint16_t a = M6502_GET_ADDR(pins);
+    if (b->cart) return;        /* a cartridge changes the memory map */
     if (!(pins & M6502_RW) || a < 0xE000 || (b->cpu.io_out & b->cpu.io_ddr & 2) == 0) return;
     uint8_t want = dump_c64_kernalv3_bin[a - 0xE000];
     if (M6502_GET_DATA(pins) != want) check_report(b, "CPU", a, M6502_GET_DATA(pins), want);
 }
 
 static void check_vic_fetch(board_t *b, uint16_t a, uint8_t got) {
+    if (b->cart) return;
     uint8_t want = (a & 0x3000) == 0x1000 ? dump_c64_char_bin[a & 0xFFF] : dram_peek(b, a);
     if (got != want) check_report(b, "VIC", a, got, want);
 }
@@ -595,7 +597,7 @@ bool board_part_simulated(board_t *b, int part) {
 }
 
 /* Rebuild the electrical network after a change: links, keys, faults. */
-static void board_rebuild(board_t *b) {
+void board_rebuild(board_t *b) {
     sim_t *s = &b->sim;
     sim_join_begin(s);
     for (int i = 0; i < s->nparts; i++) {
@@ -700,7 +702,7 @@ static const struct { const char *ref, *name, *pins; } conn_defs[] = {
     { "CN10", "POWER LED", "1=LED+ 2=LED- 3=LED+" },
 };
 
-/* The pin of a connector with the given pad name ("3", "C"), or -1. */
+/* The pin of a part with the given pad name ("3", "C"), or -1. */
 static int connector_pin(board_t *b, int part, const char *pad) {
     if (part < 0) return -1;
     const part_t *p = &b->sim.parts[part];
@@ -821,6 +823,7 @@ board_t *board_create(void) {
     b->pst_off = calloc(s->npins, sizeof(uint32_t));
     b->pst_weak = calloc(s->npins, sizeof(uint32_t));
     b->p_pla = sim_find_part(s, "U17");
+    b->p_cn6 = sim_find_part(s, "CN6");
     /* The RESET button sits on the user port, like a reset cartridge. */
     int user_port = sim_find_part(s, "CN2");
     b->pin_reset = connector_pin(b, user_port, "3");
@@ -904,14 +907,13 @@ bool board_apply_fault_spec(board_t *b, const char *spec) {
         board_set_reset_button(b, !strcmp(spec, "RESET:pressed"));
         return true;
     }
-    char ref[16] = {0}, what[16] = {0};
-    int pin = 0;
-    if (sscanf(spec, "%15[^.:].%d:%15s", ref, &pin, what) != 3 &&
+    char ref[16] = {0}, pad[8] = {0}, what[16] = {0};
+    if (sscanf(spec, "%15[^.:].%7[^:]:%15s", ref, pad, what) != 3 &&
         sscanf(spec, "%15[^:]:%15s", ref, what) != 2) return false;
     int part = sim_find_part(&b->sim, ref);
     if (part < 0) return false;
-    if (pin) {
-        int pi = part_pin(&b->sim.parts[part], pin);
+    if (pad[0]) {       /* a pin, by its pad name: "18", or "B" on CN6 */
+        int pi = connector_pin(b, part, pad);
         if (pi < 0) return false;
         int f = !strcmp(what, "gnd") ? PF_GND : !strcmp(what, "vcc") ? PF_VCC :
                 !strcmp(what, "open") ? PF_OPEN : PF_OK;

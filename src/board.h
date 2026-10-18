@@ -123,10 +123,16 @@ typedef struct board {
     int pin_reset, pin_reset_gnd;
     /* Connectors: what each pin is for ("ATN"), NULL for other parts. */
     const char **pin_func;
+    /* The cartridge in the expansion port (cart.c), NULL if none. */
+    void *cart;
+    int p_cn6;
 } board_t;
 
 board_t *board_create(void);
 void board_power_on(board_t *b);
+/* Rebuild the electrical network after changing faults, links or what
+ * a part drives (used by cart.c). */
+void board_rebuild(board_t *b);
 void board_run(board_t *b, int cycles);
 
 /* Faults. Every change rebuilds the electrical network. */
@@ -165,6 +171,12 @@ void board_frame_update(board_t *b, uint32_t frame_us);
 /* Load a .prg straight into the DRAM chips (a "backdoor", like a freezer
  * cartridge: it works even on a broken machine). Optionally type RUN. */
 bool board_load_prg(board_t *b, const char *path, bool run, char *err, int errlen);
+/* Plug a .CRT cartridge into the expansion port, or pull it out. Both
+ * switch the C64 off and on again, as you would. 'msg' tells what was
+ * loaded or why not. */
+bool board_insert_cart(board_t *b, const char *path, char *msg, int msglen);
+void board_remove_cart(board_t *b);
+const char *board_cart_name(board_t *b);
 
 /* The picture as the monitor shows it (black & white without color clock,
  * snow without a video signal). */

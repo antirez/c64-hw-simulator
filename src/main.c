@@ -1,7 +1,8 @@
 /* main.c - c64-hw-sim entry point.
  *
- *   c64-hw-sim [program.prg] [--fault SPEC]...
- *       Graphical simulator. The optional .prg is loaded and RUN after boot.
+ *   c64-hw-sim [program.prg | cartridge.crt] [--fault SPEC]...
+ *       Graphical simulator. The optional .prg is loaded and RUN after boot;
+ *       a .crt cartridge is plugged into the expansion port before power on.
  *
  *   c64-hw-sim --headless FRAMES [--shot out.png] [--text] [--fault SPEC]... [prg]
  *       Run without a window for FRAMES video frames (50 per second), then
@@ -27,7 +28,7 @@
  *   --down X,Y@F, --up X,Y@F   press / release the left button at UI frame F
  *
  * Fault SPEC examples: U17:removed  U17.18:gnd  U21.14:vcc  U9.2:open
- *                      R51:open  RP4:short */
+ *                      CN6.B:open  R51:open  RP4:short  RESET:pressed */
 #include "sokol_headers.h"
 #include "board.h"
 #include "png.h"
@@ -35,10 +36,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 
 static struct {
     const char *prg;
+    const char *crt;
     const char *shot;
     const char *screenshot;
     int headless_frames;
@@ -118,8 +121,17 @@ static void monitor_text(void) {
     }
 }
 
+/* Plug the cartridge given on the command line. */
+static void insert_cart(void) {
+    char msg[256];
+    if (!args.crt) return;
+    if (!board_insert_cart(board, args.crt, msg, sizeof(msg))) fprintf(stderr, "%s\n", msg);
+    else printf("%s\n", msg);
+}
+
 static int run_headless(void) {
     char msg[256];
+    insert_cart();
     if (!args.fault_after) apply_faults();
     clock_t t0 = clock();
     const char *type = getenv("C64HW_TYPE");     /* text to type after boot */
@@ -186,6 +198,7 @@ static void init(void) {
     stm_setup();
     snk_setup(&(snk_desc_t){ .dpi_scale = sapp_dpi_scale(), .max_vertices = 400000,
                              .logger.func = slog_func });
+    insert_cart();
     apply_faults();
     ui_init(board, args.prg, args.scope);
     if (args.inspect) ui_inspect(args.inspect);
@@ -269,7 +282,11 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--nets")) args.nets = true;
         else if (!strcmp(argv[i], "--fault") && i + 1 < argc && args.nfaults < 64) args.faults[args.nfaults++] = argv[++i];
         else if (argv[i][0] == '-') { fprintf(stderr, "unknown option %s\n", argv[i]); return 1; }
-        else args.prg = argv[i];
+        else {
+            size_t n = strlen(argv[i]);
+            if (n > 4 && !strcasecmp(argv[i] + n - 4, ".crt")) args.crt = argv[i];
+            else args.prg = argv[i];
+        }
     }
     board = board_create();
     if (args.headless_frames > 0) return run_headless();
