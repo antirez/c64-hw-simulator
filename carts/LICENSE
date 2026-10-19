@@ -1,0 +1,23 @@
+The cartridge images in this directory are NOT covered by the license of
+c64-hw-sim. They are Commodore's diagnostic software for the C64:
+
+  deadtest-781220.crt   C-64 Dead Test, revision 781220
+  diag-586220.crt       C-64 Diagnostic, revision 586220
+
+Copyright (c) Commodore Business Machines, Inc. / Commodore Electronics
+Limited. All rights belong to their copyright holders.
+
+They come, unmodified, from the Commodore archive at zimmers.net
+(https://www.zimmers.net/anonftp/pub/cbm/firmware/misc/c64diag/, files
+c64_diag-rev781220-pn314139-03.zip and c64_diag_rev586220-pn326070-01.zip),
+where they have been freely available for many years. Their manuals are
+there too.
+
+We believe including them here is fair use: the cartridges were tools for
+repairing the C64, made and sold by Commodore decades ago and long out of
+commerce; here they are used, non commercially, for the same purpose and
+for teaching how the machine works, by running them on a simulated board
+(tests/diag.sh checks the simulator against what their manuals say).
+
+If you own the copyright and want them removed, please write to
+antirez@gmail.com and they will be removed.

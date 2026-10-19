@@ -12,6 +12,8 @@
  *       --nets also lists the nets that had contentions, and who drives them.
  *       --fault-after N applies the faults after N frames (on a running C64).
  *       --at N:SPEC applies one fault at frame N; SPEC "repair" repairs all.
+ *       --flashes counts the series of full screen flashes (how Dead Test
+ *       reports a bad RAM chip), and says if the screen is lit at the end.
  *       C64HW_TYPE="text"  type this after boot (\n is RETURN)
  *       C64HW_CHECK=1      self-check oracle for the healthy board
  *
@@ -43,7 +45,7 @@
 static struct {
     const char *prg;
     const char *crt;
-    bool harness;
+    bool harness, flashes;
     const char *shot;
     const char *screenshot;
     int headless_frames;
@@ -132,6 +134,38 @@ static void insert_cart(void) {
     else printf("%s\n", msg);
 }
 
+/* --flashes: Dead Test reports a bad RAM chip by flashing the whole
+ * screen N times, then a pause, then again. A lit screen for less than a
+ * second is a flash; a dark pause longer than 0.8 s starts a new series. */
+static struct { bool lit; int lit_since, dark_since, cur, n, series[64]; } F;
+
+static bool screen_lit(void) {
+    static uint32_t px[SCREEN_W * SCREEN_H];
+    board_monitor(board, px);
+    uint32_t c = px[(SCREEN_H / 2) * SCREEN_W + SCREEN_W / 2];
+    return ((c & 0xFF) * 299 + ((c >> 8) & 0xFF) * 587 + ((c >> 16) & 0xFF) * 114) / 1000 > 128;
+}
+
+static void flash_frame(int f) {
+    bool lit = screen_lit();
+    if (lit && !F.lit) F.lit_since = f;
+    if (!lit && F.lit) {
+        if (f - F.lit_since < 50) {
+            if (F.cur && F.lit_since - F.dark_since > 40 && F.n < 64) { F.series[F.n++] = F.cur; F.cur = 0; }
+            F.cur++;
+        }
+        F.dark_since = f;
+    }
+    F.lit = lit;
+}
+
+static void flash_report(void) {
+    if (F.cur && F.n < 64) F.series[F.n++] = F.cur;
+    printf("flash series:");
+    for (int i = 0; i < F.n; i++) printf(" %d", F.series[i]);
+    printf("%s\nscreen at the end: %s\n", F.n ? "" : " none", screen_lit() ? "lit" : "dark");
+}
+
 static int run_headless(void) {
     char msg[256];
     insert_cart();
@@ -149,6 +183,7 @@ static int run_headless(void) {
         }
         board_run(board, CYCLES_PER_FRAME);
         board_frame_update(board, 20000);
+        if (args.flashes) flash_frame(f);
         /* After 3 seconds BASIC is ready: load the program and type. */
         if (args.prg && f == 150) {
             board_load_prg(board, args.prg, true, msg, sizeof(msg));
@@ -169,6 +204,7 @@ static int run_headless(void) {
            m6502_x(&board->cpu), m6502_y(&board->cpu), m6502_s(&board->cpu),
            !board->cpu_running ? "(no clock)" : board->cpu_in_reset ? "(in reset)" : "");
     if (board->check) printf("self-check errors: %llu\n", (unsigned long long)board->check_errors);
+    if (args.flashes) flash_report();
     if (args.text) monitor_text();
     if (args.nets) {    /* nets that spent time in contention, and who fights */
         sim_t *s = &board->sim;
@@ -282,6 +318,7 @@ int main(int argc, char **argv) {
                 args.clicks[args.nclicks++].down = down;
         }
         else if (!strcmp(argv[i], "--harness")) args.harness = true;
+        else if (!strcmp(argv[i], "--flashes")) args.flashes = true;
         else if (!strcmp(argv[i], "--text")) args.text = true;
         else if (!strcmp(argv[i], "--nets")) args.nets = true;
         else if (!strcmp(argv[i], "--fault") && i + 1 < argc && args.nfaults < 64) args.faults[args.nfaults++] = argv[++i];

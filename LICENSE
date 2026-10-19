@@ -26,6 +26,9 @@ Parts of this repository come from others and keep their own licenses:
 - chips/c64-roms.h: images of the Commodore 64 ROMs (BASIC, KERNAL,
   character generator). They belong to their copyright holders and are
   not covered by this license.
+- carts/: Commodore's diagnostic cartridges (Dead Test, Diagnostic
+  586220). They belong to their copyright holders and are not covered by
+  this license, see carts/LICENSE.
 - third_party/sokol: zlib license. third_party/nuklear: MIT or public
   domain, at your choice (see the end of nuklear.h).
 - src/board_data.c: generated from bwack's C64-250407-Replica-KiCad,

@@ -124,7 +124,8 @@ plug in its test harness, the dongles that loop back the user port, the
 cassette port, the serial port, both control ports and the keyboard (as
 built by Sven Petersen, an open hardware copy of Commodore's). With it a
 healthy board passes every test, and a broken contact, chip or clock
-shows where Commodore's manual says it should.
+shows where Commodore's manual says it should. Both cartridges are in
+`carts/` (they are Commodore's, see `carts/LICENSE`).
 
 Type on your keyboard as usual. ESC is RUN/STOP, PgUp is RESTORE, TAB is
 CTRL, and left ALT is C=.
@@ -159,6 +160,12 @@ Other options:
 
 `tests/faults.sh` runs 31 common faults. The expected symptom of each one
 was written down before the simulator was run.
+
+`tests/diag.sh` runs the diagnostic cartridges and checks what they report
+against their manuals: Dead Test's flash code for every DRAM, the 586220
+with its harness on a healthy board and with faults. It takes a few
+minutes, so it runs only when you start it. `--flashes` (headless) counts
+Dead Test's flash series.
 
 ## How it works
 
