@@ -144,6 +144,17 @@ static void line(dc_t *d, float x0, float y0, float x1, float y1, struct nk_colo
     nk_stroke_line(d->cv, x0, y0, x1, y1, d->t, c);
 }
 
+/* Points of an arc, from angle a0 to a1 (nuklear's own stroke_arc draws a
+ * pie slice, with lines to the center). */
+static int arc_points(float *pts, float cx, float cy, float r, float a0, float a1, int n) {
+    for (int i = 0; i <= n; i++) {
+        float a = a0 + (a1 - a0) * (float)i / (float)n;
+        pts[2 * i] = cx + r * cosf(a);
+        pts[2 * i + 1] = cy + r * sinf(a);
+    }
+    return n + 1;
+}
+
 /* A dot showing what a gate output drives. */
 static void out_mark(dc_t *d, float x, float y, int num) {
     float r = d->u * 0.09f;
@@ -200,11 +211,13 @@ static void draw_and(dc_t *d, const gate_t *g) {
     float yc = (d->pos[g->in[0]].y + d->pos[g->in[1]].y) / 2, h = u * 0.9f, w = u * 0.75f;
     float x0 = ex + dir * u * 0.35f, flat = w - h / 2;
     in_wires2(d, g, x0, yc - h / 4, yc + h / 4);
-    line(d, x0, yc - h / 2, x0, yc + h / 2, d->ink);
-    line(d, x0, yc - h / 2, x0 + dir * flat, yc - h / 2, d->ink);
-    line(d, x0, yc + h / 2, x0 + dir * flat, yc + h / 2, d->ink);
-    float a = dir > 0 ? -NK_PI / 2 : NK_PI / 2;
-    nk_stroke_arc(d->cv, x0 + dir * flat, yc, h / 2, a, a + NK_PI, d->t, d->ink);
+    /* The D: flat back, then a half circle toward the output. */
+    float pts[2 * 40];
+    int n = 0;
+    pts[n++] = x0; pts[n++] = yc + h / 2;
+    pts[n++] = x0; pts[n++] = yc - h / 2;
+    n += 2 * arc_points(pts + n, x0 + dir * flat, yc, h / 2, -NK_PI / 2, -NK_PI / 2 + dir * NK_PI, 24);
+    nk_stroke_polygon(d->cv, pts, n / 2, d->t, d->ink);
     float tip = x0 + dir * w;
     out_wire(d, tip, yc, dir, g->out);
     out_mark(d, tip, yc, g->out);
@@ -490,8 +503,9 @@ static void draw_pinout(struct nk_context *ctx, struct nk_command_buffer *cv, bo
         nk_stroke_rect(cv, body, 4, 2, role_color[role]);
     }
     /* The notch at the top, pin 1 to its left. */
-    float nr = 8;
-    nk_stroke_arc(cv, body.x + body.w / 2, body.y, nr, 0, NK_PI, 1.5f, p->removed ? COL_SOCKET : COL_CHIP_EDGE);
+    float npts[2 * 17];
+    int nn = arc_points(npts, body.x + body.w / 2, body.y, 8, 0, NK_PI, 16);
+    nk_stroke_polyline(cv, npts, nn, 1.5f, p->removed ? COL_SOCKET : COL_CHIP_EDGE);
     pinpos_t pos[48] = {0};
     float fh = ctx->style.font->height;
     for (int num = 1; num <= p->npins && num < 48; num++) {
