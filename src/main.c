@@ -29,6 +29,10 @@
  *   --view X,Y,ZOOM     center the board on X,Y mm, ZOOM times the full view
  *   --mouse X,Y         keep the mouse at X,Y (window pixels): hovering
  *   --down X,Y@F, --up X,Y@F   press / release the left button at UI frame F
+ *   --key NAME@F        press a key at UI frame F: up down pgup pgdn home
+ *                       end enter shift-enter esc backspace ctrl-o
+ *   --chars TEXT@F      type TEXT at UI frame F
+ *   --browse            open the file browser
  *
  * Fault SPEC examples: U17:removed  U17.18:gnd  U21.14:vcc  U9.2:open
  *                      CN6.B:open  R51:open  RP4:short  RESET:pressed */
@@ -64,6 +68,9 @@ static struct {
     float view_x, view_y, view_zoom, mouse_x, mouse_y;
     struct { int frame; bool down; float x, y; } clicks[16];
     int nclicks;
+    struct { int frame; char what[1024]; bool chars; size_t sent; } keys[16];
+    int nkeys;
+    bool browse;
 } args = { .frames = 60 };
 
 static board_t *board;
@@ -241,6 +248,7 @@ static void init(void) {
     apply_faults();
     ui_init(board, args.prg, args.scope);
     if (args.inspect) ui_inspect(args.inspect);
+    if (args.browse) ui_browse();
     if (args.view) ui_view(args.view_x, args.view_y, args.view_zoom);
 }
 
@@ -264,6 +272,40 @@ static void frame(void) {
         mouse_event(SAPP_EVENTTYPE_MOUSE_MOVE, args.clicks[i].x, args.clicks[i].y);
         mouse_event(args.clicks[i].down ? SAPP_EVENTTYPE_MOUSE_DOWN : SAPP_EVENTTYPE_MOUSE_UP,
                     args.clicks[i].x, args.clicks[i].y);
+    }
+    for (int i = 0; i < args.nkeys; i++) {
+        sapp_event ev;
+        memset(&ev, 0, sizeof(ev));
+        if (args.keys[i].chars) {
+            /* nuklear takes 16 bytes of text a frame: the rest goes in the
+             * next frames, as if typed. */
+            const char *what = args.keys[i].what;
+            if (args.keys[i].frame > ui_frames || !what[args.keys[i].sent]) continue;
+            for (int n = 0; n < 8 && what[args.keys[i].sent]; n++) {
+                ev.type = SAPP_EVENTTYPE_CHAR;
+                ev.char_code = (uint32_t)what[args.keys[i].sent++];
+                ui_event(&ev);
+            }
+            continue;
+        }
+        if (args.keys[i].frame != ui_frames) continue;
+        static const struct { const char *name; sapp_keycode code; uint32_t mod; } names[] = {
+            { "up", SAPP_KEYCODE_UP, 0 }, { "down", SAPP_KEYCODE_DOWN, 0 },
+            { "pgup", SAPP_KEYCODE_PAGE_UP, 0 }, { "pgdn", SAPP_KEYCODE_PAGE_DOWN, 0 },
+            { "home", SAPP_KEYCODE_HOME, 0 }, { "end", SAPP_KEYCODE_END, 0 },
+            { "enter", SAPP_KEYCODE_ENTER, 0 }, { "shift-enter", SAPP_KEYCODE_ENTER, SAPP_MODIFIER_SHIFT },
+            { "esc", SAPP_KEYCODE_ESCAPE, 0 }, { "backspace", SAPP_KEYCODE_BACKSPACE, 0 },
+            { "ctrl-o", SAPP_KEYCODE_O, SAPP_MODIFIER_CTRL },
+        };
+        for (size_t k = 0; k < sizeof(names) / sizeof(names[0]); k++) {
+            if (strcmp(names[k].name, args.keys[i].what)) continue;
+            ev.key_code = names[k].code;
+            ev.modifiers = names[k].mod;
+            ev.type = SAPP_EVENTTYPE_KEY_DOWN;
+            ui_event(&ev);
+            ev.type = SAPP_EVENTTYPE_KEY_UP;
+            ui_event(&ev);
+        }
     }
     ui_frames++;
     ui_frame();
@@ -318,6 +360,16 @@ int main(int argc, char **argv) {
                 args.clicks[args.nclicks++].down = down;
         }
         else if (!strcmp(argv[i], "--harness")) args.harness = true;
+        else if (!strcmp(argv[i], "--browse")) args.browse = true;
+        else if ((!strcmp(argv[i], "--key") || !strcmp(argv[i], "--chars")) && i + 1 < argc && args.nkeys < 16) {
+            bool chars = !strcmp(argv[i], "--chars");
+            const char *a = argv[++i], *at = strrchr(a, '@');
+            if (at) {
+                snprintf(args.keys[args.nkeys].what, sizeof(args.keys[0].what), "%.*s", (int)(at - a), a);
+                args.keys[args.nkeys].frame = atoi(at + 1);
+                args.keys[args.nkeys++].chars = chars;
+            }
+        }
         else if (!strcmp(argv[i], "--flashes")) args.flashes = true;
         else if (!strcmp(argv[i], "--text")) args.text = true;
         else if (!strcmp(argv[i], "--nets")) args.nets = true;
@@ -340,6 +392,7 @@ int main(int argc, char **argv) {
         .height = 1000,
         .window_title = "c64-hw-sim - C64 ASSY 250407",
         .enable_dragndrop = true,
+        .enable_clipboard = true,     /* paste a path in the file browser */
         .high_dpi = false,
         .logger.func = slog_func,
     });

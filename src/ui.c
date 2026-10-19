@@ -12,8 +12,8 @@
  * Right: what the monitor shows, the oscilloscope and the controls. */
 #include "ui_common.h"
 #include "inspect.h"
+#include "browser.h"
 #include "png.h"
-#include <dirent.h>
 #include <math.h>
 #include <pthread.h>
 #include <sched.h>
@@ -21,7 +21,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
 #define GL_SILENCE_DEPRECATION
 #ifdef __APPLE__
@@ -67,17 +66,13 @@ static struct {
     bool paused, warp;
     double last_time, speed;
     uint64_t frame;
-    const char *autoload;
+    char autoload[4096];    /* a program to load once BASIC is ready */
+    bool autoload_run;
     /* Scope. */
     int timebase;
     bool trigger;
-    /* PRG loading. */
-    char path[1024];
+    /* What the last program or cartridge load said. */
     char status[512];
-    char dir[1024];
-    char entries[256][256];
-    bool entry_is_dir[256];
-    int nentries;
 } U;
 
 /* ------------------------------------------------------------------------ */
@@ -407,8 +402,9 @@ static void board_input(struct nk_context *ctx, struct nk_rect area) {
     float mx = (in->mouse.pos.x - area.x - U.ox) / U.zoom;
     float my = (in->mouse.pos.y - area.y - U.oy) / U.zoom;
     bool inside = nk_input_is_mouse_hovering_rect(in, area) && nk_window_is_hovered(ctx);
-    struct nk_rect ir;     /* the inspector floats above the board */
+    struct nk_rect ir;     /* the inspector and the browser float above the board */
     if (inspect_bounds(&ir) && nk_input_is_mouse_hovering_rect(in, ir)) inside = false;
+    if (browser_bounds(&ir) && nk_input_is_mouse_hovering_rect(in, ir)) inside = false;
     U.hover_pin = U.hover_part = -1;
     if (U.menu_open) return;
     if (inside) {
@@ -713,64 +709,35 @@ static void scope_window(struct nk_context *ctx, float x, float y, float h) {
 /* Controls                                                                  */
 /* ------------------------------------------------------------------------ */
 
-static int cmp_entries(const void *a, const void *b) { return strcmp(a, b); }
+#define BASIC_READY (3 * C64_FREQ)  /* from power on to READY, in cycles */
 
-static void scan_dir(void) {
-    U.nentries = 0;
-    DIR *d = opendir(U.dir);
-    if (!d) return;
-    /* ".." first, then directories, then .prg files. */
-    strcpy(U.entries[U.nentries], "..");
-    U.entry_is_dir[U.nentries++] = true;
-    char files[256][256];
-    int nfiles = 0, ndirs_start = U.nentries;
-    struct dirent *e;
-    while ((e = readdir(d)) && U.nentries < 200 && nfiles < 200) {
-        if (e->d_name[0] == '.') continue;
-        char full[2048];
-        snprintf(full, sizeof(full), "%s/%s", U.dir, e->d_name);
-        struct stat st;
-        if (stat(full, &st) != 0) continue;
-        if (S_ISDIR(st.st_mode)) {
-            snprintf(U.entries[U.nentries], 256, "%s", e->d_name);
-            U.entry_is_dir[U.nentries++] = true;
-        } else {
-            size_t n = strlen(e->d_name);
-            if (n > 4 && (!strcasecmp(e->d_name + n - 4, ".prg") || !strcasecmp(e->d_name + n - 4, ".crt")))
-                snprintf(files[nfiles++], 256, "%s", e->d_name);
-        }
-    }
-    closedir(d);
-    qsort(U.entries[ndirs_start], U.nentries - ndirs_start, 256, cmp_entries);
-    qsort(files, nfiles, 256, cmp_entries);
-    for (int i = 0; i < nfiles && U.nentries < 256; i++) {
-        memcpy(U.entries[U.nentries], files[i], 256);
-        U.entry_is_dir[U.nentries++] = false;
-    }
-}
-
-static void enter_dir(const char *name) {
-    char path[2048];
-    if (!strcmp(name, "..")) {
-        char *slash = strrchr(U.dir, '/');
-        if (slash && slash != U.dir) *slash = 0;
-        else strcpy(U.dir, "/");
-    } else {
-        snprintf(path, sizeof(path), "%s%s%s", U.dir, strcmp(U.dir, "/") ? "/" : "", name);
-        snprintf(U.dir, sizeof(U.dir), "%s", path);
-    }
-    scan_dir();
-}
-
-/* A .prg goes into RAM; a .crt cartridge into the expansion port. */
-static void load_prg(const char *path, bool run) {
-    snprintf(U.path, sizeof(U.path), "%s", path);
+/* A .prg goes into RAM; a .crt cartridge into the expansion port. A file
+ * loaded goes on the list of recent ones. */
+static bool load_prg(const char *path, bool run) {
     size_t n = strlen(path);
+    bool ok;
     if (n > 4 && !strcasecmp(path + n - 4, ".crt")) {
-        if (board_insert_cart(U.b, path, U.status, sizeof(U.status))) select_pin(U.b->scope_pin);
+        ok = board_insert_cart(U.b, path, U.status, sizeof(U.status));
+        if (ok) select_pin(U.b->scope_pin);
+    } else if (U.b->sim.cycle < BASIC_READY) {
+        /* Still booting: BASIC's cold start would wipe the program and
+         * the RUN typed for it. Load it when BASIC is up. */
+        snprintf(U.autoload, sizeof(U.autoload), "%s", path);
+        U.autoload_run = run;
+        snprintf(U.status, sizeof(U.status), "%s: loading when BASIC is ready", path);
+        ok = true;
     } else {
-        board_load_prg(U.b, path, run, U.status, sizeof(U.status));
+        ok = board_load_prg(U.b, path, run, U.status, sizeof(U.status));
     }
+    if (ok) browser_add_recent(path);
+    /* The panel is narrow: the file's name, not its whole path. */
+    const char *base = strrchr(path, '/'), *at = strstr(U.status, path);
+    if (base && at) {
+        char tail[sizeof(U.status)];
+        snprintf(tail, sizeof(tail), "%s", at + n);
+        snprintf(U.status + (at - U.status), sizeof(U.status) - (size_t)(at - U.status), "%s%s", base + 1, tail);
+    }
+    return ok;
 }
 
 static void fault_list(struct nk_context *ctx) {
@@ -910,32 +877,25 @@ static void controls_window(struct nk_context *ctx, float x, float y, float h) {
                 if (nk_button_label(ctx, "remove")) { board_remove_cart(b); select_pin(b->scope_pin); }
                 nk_layout_row_end(ctx);
             }
-            nk_layout_row_begin(ctx, NK_STATIC, 24, 3);
-            nk_layout_row_push(ctx, 250);
-            nk_edit_string_zero_terminated(ctx, NK_EDIT_FIELD, U.path, sizeof(U.path), nk_filter_default);
-            nk_layout_row_push(ctx, 70);
-            if (nk_button_label(ctx, "Load")) load_prg(U.path, false);
-            nk_layout_row_push(ctx, 90);
-            if (nk_button_label(ctx, "Load+RUN")) load_prg(U.path, true);
-            nk_layout_row_end(ctx);
+            nk_layout_row_dynamic(ctx, 26, 1);
+            if (nk_widget_is_hovered(ctx)) nk_tooltip(ctx, "Browse for a .prg or .crt file (Ctrl+O or Cmd+O)");
+            if (nk_button_label(ctx, "Open a program or a cartridge...")) browser_open();
             nk_layout_row_dynamic(ctx, 20, 1);
             nk_label_colored(ctx, U.status[0] ? U.status : "or drop a .prg or .crt file on the window",
                              NK_TEXT_LEFT, COL_DIMTEXT);
-            nk_label(ctx, U.dir, NK_TEXT_LEFT);
-            nk_layout_row_dynamic(ctx, 140, 1);
-            if (nk_group_begin(ctx, "files", NK_WINDOW_BORDER)) {
-                nk_layout_row_dynamic(ctx, 18, 1);
-                for (int i = 0; i < U.nentries; i++) {
-                    char name[270];
-                    snprintf(name, sizeof(name), "%s%s", U.entries[i], U.entry_is_dir[i] ? "/" : "");
-                    if (nk_select_label(ctx, name, NK_TEXT_LEFT, 0)) {
-                        if (U.entry_is_dir[i]) { enter_dir(U.entries[i]); break; }
-                        char full[2048];
-                        snprintf(full, sizeof(full), "%s/%s", U.dir, U.entries[i]);
-                        load_prg(full, true);
-                    }
+            /* The recent ones, one click away. */
+            if (browser_recent_count()) nk_label_colored(ctx, "recent (click to load again):", NK_TEXT_LEFT, COL_DIMTEXT);
+            for (int i = 0; i < browser_recent_count(); i++) {
+                const char *path = browser_recent(i), *base = strrchr(path, '/');
+                char label[300];
+                snprintf(label, sizeof(label), "  %s", base ? base + 1 : path);
+                if (nk_widget_is_hovered(ctx)) nk_tooltip(ctx, path);
+                if (nk_select_label(ctx, label, NK_TEXT_LEFT, 0)) {
+                    char copy[4096];
+                    snprintf(copy, sizeof(copy), "%s", path);
+                    load_prg(copy, true);
+                    break;
                 }
-                nk_group_end(ctx);
             }
             nk_tree_pop(ctx);
         }
@@ -1002,7 +962,7 @@ static void *sim_main(void *arg) {
 /* ------------------------------------------------------------------------ */
 
 /* Speed of the simulation (fraction of a real C64), and the program to
- * load once BASIC is ready (given on the command line). */
+ * load once BASIC is ready. */
 static void update_status(void) {
     static uint64_t last_cycle;
     double now = stm_sec(stm_now());
@@ -1014,9 +974,11 @@ static void update_status(void) {
     }
     U.last_time = now;
     last_cycle = cycle;
-    if (U.autoload && cycle > 3 * C64_FREQ) {
-        load_prg(U.autoload, true);
-        U.autoload = NULL;
+    if (U.autoload[0] && cycle >= BASIC_READY) {
+        char path[sizeof(U.autoload)];
+        snprintf(path, sizeof(path), "%s", U.autoload);
+        U.autoload[0] = 0;
+        load_prg(path, U.autoload_run);
     }
 }
 
@@ -1047,6 +1009,14 @@ void ui_frame(void) {
         U.menu_x = ctx->input.mouse.pos.x + 10;
         U.menu_y = ctx->input.mouse.pos.y + 10;
         U.menu_frame = (int)U.frame;
+    }
+    bool run = true;
+    const char *picked = browser_window(ctx, nk_rect(0, 0, bw, H), &run);
+    if (picked) {
+        char path[4096];
+        snprintf(path, sizeof(path), "%s", picked);
+        if (load_prg(path, run)) browser_close();
+        else browser_error(U.status);
     }
     fault_menu(ctx);
     /* Start the statistics over (the drawing above read this frame's). */
@@ -1096,12 +1066,25 @@ void ui_event(const sapp_event *ev) {
 }
 
 static void handle_event(const sapp_event *ev) {
-    bool nk_wants_keys = snk_handle_event(ev);
+    snk_handle_event(ev);
     if (ev->type == SAPP_EVENTTYPE_FILES_DROPPED && sapp_get_num_dropped_files() > 0) {
-        load_prg(sapp_get_dropped_file_path(0), true);
+        if (load_prg(sapp_get_dropped_file_path(0), true)) browser_close();
         return;
     }
-    if (nk_wants_keys) return;      /* typing in a text field */
+    if (ev->type == SAPP_EVENTTYPE_KEY_DOWN && ev->key_code == SAPP_KEYCODE_O &&
+        (ev->modifiers & (SAPP_MODIFIER_CTRL | SAPP_MODIFIER_SUPER))) {
+        browser_open();
+        return;
+    }
+    /* A key released always reaches the C64, or a key held down while the
+     * browser opened (Shift, say) would stay pressed. */
+    if (ev->type == SAPP_EVENTTYPE_KEY_UP && special_key(ev->key_code))
+        board_key_up(U.b, special_key(ev->key_code));
+    /* While the browser is open the keys are for it, not for the C64. Its
+     * find field is the only text field: the rest of the time the keyboard
+     * is the C64's. (What snk_handle_event() returns is no help: it says
+     * the mouse is over a window, and here it always is.) */
+    if (browser_is_open()) { browser_key(ev); return; }
     if (ev->type == SAPP_EVENTTYPE_CHAR) {
         int c = (int)ev->char_code;
         if (c < 32 || c >= 127 || (ev->modifiers & (SAPP_MODIFIER_CTRL | SAPP_MODIFIER_SUPER))) return;
@@ -1110,11 +1093,9 @@ static void handle_event(const sapp_event *ev) {
         else if (c >= 'A' && c <= 'Z') c += 32;
         board_key_down(U.b, c);
         board_key_up(U.b, c);
-    } else if (ev->type == SAPP_EVENTTYPE_KEY_DOWN || ev->type == SAPP_EVENTTYPE_KEY_UP) {
+    } else if (ev->type == SAPP_EVENTTYPE_KEY_DOWN) {
         int k = special_key(ev->key_code);
-        if (!k) return;
-        if (ev->type == SAPP_EVENTTYPE_KEY_DOWN) board_key_down(U.b, k);
-        else board_key_up(U.b, k);
+        if (k) board_key_down(U.b, k);
     }
 }
 
@@ -1127,7 +1108,7 @@ void ui_init(board_t *b, const char *prg, const char *scope_pin) {
     U.hover_pin = U.hover_part = -1;
     U.trigger = true;
     U.timebase = 1;
-    U.autoload = prg;
+    if (prg) { snprintf(U.autoload, sizeof(U.autoload), "%s", prg); U.autoload_run = true; }
     U.net_state = calloc(b->sim.nnets, 1);
     b->pin_stats = true;        /* what each pin drives, for the inspector */
     compute_boxes();
@@ -1138,8 +1119,7 @@ void ui_init(board_t *b, const char *prg, const char *scope_pin) {
     U.smp = sg_make_sampler(&(sg_sampler_desc){ .min_filter = SG_FILTER_LINEAR, .mag_filter = SG_FILTER_LINEAR,
                                                 .wrap_u = SG_WRAP_CLAMP_TO_EDGE, .wrap_v = SG_WRAP_CLAMP_TO_EDGE });
     U.snk_img = snk_make_image(&(snk_image_desc_t){ .texture_view = U.view, .sampler = U.smp });
-    if (!getcwd(U.dir, sizeof(U.dir))) strcpy(U.dir, ".");
-    scan_dir();
+    browser_init();
     if (scope_pin) {    /* --scope REF.PIN */
         char ref[16];
         int num;
@@ -1164,6 +1144,9 @@ void ui_inspect(const char *ref) {
     else fprintf(stderr, "no part %s\n", ref);
     unlock_board();
 }
+
+/* Open the file browser (for --browse). */
+void ui_browse(void) { browser_open(); }
 
 /* Center the board view on (cx, cy) mm, zoom times the "fit" zoom. */
 void ui_view(float cx, float cy, float zoom) {

@@ -107,12 +107,21 @@ port. Hold it, or keep it pressed to look at the board in reset. The CPU,
 the CIAs and the SID reset; the VIC, which has no reset pin, and the RAM
 don't. Power cycle switches the C64 off and on again.
 
-The control panel also loads .prg files. They are written straight into
-the DRAM chips, as a freezer cartridge would do it, so loading works on a
-broken board too.
+Open (Ctrl+O, Cmd+O on the Mac) shows a file browser, starting in
+`carts/`. It lists folders, programs and cartridges, and says what each
+file is, from its header: a BASIC program, or machine code and its
+address; a cartridge's kind and name, or why it can't be used. Type to
+narrow the list, or type a path and press Enter to go there. Arrows and
+Enter, or a double click, open a file; Backspace goes up; Esc closes.
+Recent files stay in the control panel, one click away, and files can be
+dropped on the window too.
 
-It also plugs .crt cartridges into the expansion port (the C64 is switched
-off and on, as you would do). The plain ones are supported, 8K, 16K and
+Programs (.prg) are loaded and RUN, or only loaded with Shift+Enter. They
+are written straight into the DRAM chips, as a freezer cartridge would do
+it, so loading works on a broken board too.
+
+Cartridges (.crt) are plugged into the expansion port (the C64 is
+switched off and on, as you would do). The plain ones are supported, 8K, 16K and
 Ultimax, which is what the diagnostic cartridges are: Dead Test replaces
 the KERNAL and runs on boards with dead RAM or ROMs. A cartridge only
 drives the expansion port pins, everything else is the board: a dirty
@@ -154,9 +163,11 @@ Other options:
 - `--record 900:DIR --frames 90` (graphical mode) saves the window 90
   times, every 4 emulated frames from frame 900 on. This is how the GIF
   above was made.
-- `--inspect U8`, `--view X,Y,ZOOM`, `--mouse X,Y`, `--down X,Y@F` and
-  `--up X,Y@F` (graphical mode) open the inspector, aim the board view and
-  move or click the mouse, for screenshots and tests of the interface.
+- `--inspect U8`, `--browse`, `--view X,Y,ZOOM`, `--mouse X,Y`,
+  `--down X,Y@F`, `--up X,Y@F`, `--key NAME@F` and `--chars TEXT@F`
+  (graphical mode) open the inspector or the file browser, aim the board
+  view, click the mouse and press keys at UI frame F, for screenshots and
+  tests of the interface.
 
 `tests/faults.sh` runs 31 common faults. The expected symptom of each one
 was written down before the simulator was run.
