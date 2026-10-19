@@ -105,13 +105,13 @@ static inline void pin_desc(board_t *b, int pin, char *buf, size_t len) {
     const part_t *part = &s->parts[p->part];
     const char *name = sim_pin_name(s, pin), *func = board_pin_func(b, pin);
     if (part->kind == PART_IC)
-        snprintf(buf, len, "%s.%s %s (%s)", part->ref, bd_pads[pin].name, name ? name : "",
+        snprintf(buf, len, "%s.%s %s (%s)", part->ref, b->sim.bd->pads[pin].name, name ? name : "",
                  board_part_label(b, p->part));
     else if (func)
-        snprintf(buf, len, "%s.%s %s (%s)", part->ref, bd_pads[pin].name, func,
+        snprintf(buf, len, "%s.%s %s (%s)", part->ref, b->sim.bd->pads[pin].name, func,
                  board_connector_name(b, p->part));
     else
-        snprintf(buf, len, "%s.%s %s", part->ref, bd_pads[pin].name, name ? name : "");
+        snprintf(buf, len, "%s.%s %s", part->ref, b->sim.bd->pads[pin].name, name ? name : "");
 }
 
 static inline const char *pin_net_name(board_t *b, int pin) {

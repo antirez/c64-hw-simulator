@@ -23,8 +23,7 @@
  *
  * Like the keys and the RESET button, the connections are joins of nets,
  * made when the network is rebuilt; a switch changing rebuilds it. */
-#include "board.h"
-#include "board_data.h"
+#include "c64.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -77,9 +76,10 @@ static void join_pins(board_t *b, const char *a, const char *c) {
 }
 
 void harness_joins(board_t *b) {
-    if (!b->harness) return;
+    c64_t *c64 = C64(b);
+    if (!c64->harness) return;
     for (size_t i = 0; i < sizeof(wires) / sizeof(wires[0]); i++) join_pins(b, wires[i][0], wires[i][1]);
-    if (b->harness_write)
+    if (c64->harness_write)
         for (size_t i = 0; i < sizeof(joy_switches) / sizeof(joy_switches[0]); i++)
             join_pins(b, joy_switches[i][0], joy_switches[i][1]);
     else
@@ -90,30 +90,35 @@ void harness_joins(board_t *b) {
 /* Every cycle: the motor drives WRITE through the divider, and WRITE
  * flips the switches (rebuilding the network when it changes). */
 void harness_tick(board_t *b) {
-    if (!b->harness || b->pin_hmotor < 0 || b->pin_hwrite < 0) return;
+    c64_t *c64 = C64(b);
+    if (!c64->harness || c64->pin_hmotor < 0 || c64->pin_hwrite < 0) return;
     sim_t *s = &b->sim;
-    const pin_t *m = &s->pins[b->pin_hmotor];
+    const pin_t *m = &s->pins[c64->pin_hmotor];
     bool motor = m->root >= 0 && m->fault != PF_OPEN && s->nets[m->root].strength != S_Z && s->nets[m->root].level;
-    sim_drive(s, b->pin_hwrite, DRIVE(S_SUPPLY, motor));
-    const pin_t *w = &s->pins[b->pin_hwrite];
+    sim_drive(s, c64->pin_hwrite, DRIVE(S_SUPPLY, motor));
+    const pin_t *w = &s->pins[c64->pin_hwrite];
     bool write = w->root >= 0 && s->nets[w->root].level;
-    if (write != b->harness_write) {
-        b->harness_write = write;
+    if (write != c64->harness_write) {
+        c64->harness_write = write;
         board_rebuild(b);
     }
 }
 
 void board_set_harness(board_t *b, bool plugged) {
-    if (b->harness == plugged) return;
-    b->pin_hmotor = find_pin(b, "CN3.C");
-    b->pin_hwrite = find_pin(b, "CN3.E");
-    b->harness = plugged;
-    b->harness_write = false;
-    if (b->pin_hwrite >= 0) b->sim.pins[b->pin_hwrite].drive = DRV_Z;
+    if (!board_is_c64(b)) return;
+    c64_t *c64 = C64(b);
+    if (c64->harness == plugged) return;
+    c64->pin_hmotor = find_pin(b, "CN3.C");
+    c64->pin_hwrite = find_pin(b, "CN3.E");
+    c64->harness = plugged;
+    c64->harness_write = false;
+    if (c64->pin_hwrite >= 0) b->sim.pins[c64->pin_hwrite].drive = DRV_Z;
     /* Dongles go in with the power off: switch the C64 on again. */
     board_rebuild(b);
     board_power_on(b);
 }
+
+bool board_harness(board_t *b) { return board_is_c64(b) && C64(b)->harness; }
 
 /* What the SID reads on a POT pin: the time the board's capacitor on that
  * line (C48, C93: 1800 pF) takes to charge through the paddle resistors
@@ -135,8 +140,8 @@ int board_pot_value(board_t *b, int sid_pin) {
     }
     /* The paddles reaching the line through a closed U28 switch. */
     double g = 0;
-    int u28 = b->p_u28;
-    if (b->harness && u28 >= 0 && !s->parts[u28].dead) {
+    int u28 = C64(b)->p_u28;
+    if (C64(b)->harness && u28 >= 0 && !s->parts[u28].dead) {
         static const int sw[4][3] = { {1, 2, 13}, {4, 3, 5}, {8, 9, 6}, {11, 10, 12} };
         const part_t *p = &s->parts[u28];
         for (int i = 0; i < 4; i++) {

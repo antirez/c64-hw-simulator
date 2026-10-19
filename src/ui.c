@@ -11,6 +11,7 @@
  *
  * Right: what the monitor shows, the oscilloscope and the controls. */
 #include "ui_common.h"
+#include "c64.h"
 #include "inspect.h"
 #include "browser.h"
 #include "png.h"
@@ -61,7 +62,7 @@ static struct {
     sg_view view;
     sg_sampler smp;
     snk_image_t snk_img;
-    uint32_t monitor[SCREEN_W * SCREEN_H];
+    uint32_t *monitor;          /* screen_w x screen_h of the machine */
     /* Emulation. */
     bool paused, warp;
     double last_time, speed;
@@ -80,6 +81,8 @@ static struct {
 /* ------------------------------------------------------------------------ */
 
 static sim_t *S(void) { return &U.b->sim; }
+static const board_data_t *BD(void) { return U.b->sim.bd; }
+static const machine_t *M(void) { return U.b->m; }
 
 static bool pin_is_interactive(int pin) {
     const part_t *p = &S()->parts[S()->pins[pin].part];
@@ -98,7 +101,7 @@ static void compute_boxes(void) {
         part_t *p = &s->parts[i];
         float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f, pad = 0;
         for (int k = 0; k < p->npins; k++) {
-            const bd_pad_t *bp = &bd_pads[p->first_pin + k];
+            const bd_pad_t *bp = &BD()->pads[p->first_pin + k];
             if (bp->x < x0) x0 = bp->x;
             if (bp->y < y0) y0 = bp->y;
             if (bp->x > x1) x1 = bp->x;
@@ -122,10 +125,10 @@ static struct nk_rect to_screen(struct nk_rect area, float x0, float y0, float x
 }
 
 static void fit_view(struct nk_rect area) {
-    float bw = bd_outline[2] - bd_outline[0], bh = bd_outline[3] - bd_outline[1];
+    float bw = BD()->outline[2] - BD()->outline[0], bh = BD()->outline[3] - BD()->outline[1];
     U.zoom = fminf(area.w / bw, area.h / bh) * 0.98f;
-    U.ox = (area.w - bw * U.zoom) / 2 - bd_outline[0] * U.zoom;
-    U.oy = (area.h - bh * U.zoom) / 2 - bd_outline[1] * U.zoom;
+    U.ox = (area.w - bw * U.zoom) / 2 - BD()->outline[0] * U.zoom;
+    U.oy = (area.h - bh * U.zoom) / 2 - BD()->outline[1] * U.zoom;
     U.fitted = true;
 }
 
@@ -134,7 +137,7 @@ static int pick_pin(float mx, float my) {
     sim_t *s = S();
     for (int i = 0; i < s->npins; i++) {
         if (!pin_is_interactive(i)) continue;
-        const bd_pad_t *bp = &bd_pads[i];
+        const bd_pad_t *bp = &BD()->pads[i];
         float hw = fmaxf(bp->w / 2, 0.7f), hh = fmaxf(bp->h / 2, 0.7f);
         if (fabsf(mx - bp->x) <= hw && fabsf(my - bp->y) <= hh) return i;
     }
@@ -234,7 +237,7 @@ static void draw_chip_inside(struct nk_command_buffer *cv, struct nk_context *ct
     for (int num = 1; num <= p->npins && num < 48; num++) {
         int pin = part_pin(p, num);
         if (pin < 0) continue;
-        float px = area.x + U.ox + bd_pads[pin].x * U.zoom, py = area.y + U.oy + bd_pads[pin].y * U.zoom;
+        float px = area.x + U.ox + BD()->pads[pin].x * U.zoom, py = area.y + U.oy + BD()->pads[pin].y * U.zoom;
         int side = px < r.x + r.w / 2 ? -1 : 1;
         pos[num] = (pinpos_t){ side < 0 ? r.x : r.x + r.w, py, side, true };
     }
@@ -298,7 +301,7 @@ static void draw_part(struct nk_command_buffer *cv, struct nk_context *ctx, stru
         /* Pin 1 marker. */
         int p1 = part_pin(p, 1);
         if (p1 >= 0) {
-            float px = area.x + U.ox + bd_pads[p1].x * U.zoom, py = area.y + U.oy + bd_pads[p1].y * U.zoom;
+            float px = area.x + U.ox + BD()->pads[p1].x * U.zoom, py = area.y + U.oy + BD()->pads[p1].y * U.zoom;
             float cx = fminf(fmaxf(px, r.x + 6), r.x + r.w - 6), cy = fminf(fmaxf(py, r.y + 6), r.y + r.h - 6);
             nk_fill_circle(cv, nk_rect(cx - 3, cy - 3, 6, 6), p->removed ? COL_SOCKET : COL_CHIP_EDGE);
         }
@@ -318,11 +321,11 @@ static void draw_part(struct nk_command_buffer *cv, struct nk_context *ctx, stru
         break;
     case PART_CONNECTOR: {
         /* A cartridge in the expansion port: a board under the pins. */
-        const char *cart = i == U.b->p_cn6 ? board_cart_name(U.b) : NULL;
+        const char *cart = board_is_c64(U.b) && i == C64(U.b)->p_cn6 ? board_cart_name(U.b) : NULL;
         /* A dongle of the 586220 harness: an outline around the connector. */
         static const char *const harness_cn[] = { "CN1", "CN2", "CN3", "CN4", "CN8", "CN9" };
         bool dongle = false;
-        for (size_t k = 0; U.b->harness && k < sizeof(harness_cn) / sizeof(harness_cn[0]); k++)
+        for (size_t k = 0; board_harness(U.b) && k < sizeof(harness_cn) / sizeof(harness_cn[0]); k++)
             if (!strcmp(p->ref, harness_cn[k])) dongle = true;
         if (dongle) nk_stroke_rect(cv, nk_rect(r.x - 4, r.y - 4, r.w + 8, r.h + 8), 3, 2, COL_HARNESS);
         if (cart) {
@@ -361,7 +364,7 @@ static void draw_pins(struct nk_command_buffer *cv, struct nk_context *ctx, stru
     float ctx_font_h = ctx->style.font->height;
     int hover_root = U.hover_pin >= 0 ? s->pins[U.hover_pin].root : -2;
     for (int i = 0; i < s->npins; i++) {
-        const bd_pad_t *bp = &bd_pads[i];
+        const bd_pad_t *bp = &BD()->pads[i];
         const pin_t *p = &s->pins[i];
         float sz = fmaxf(fminf(bp->w, bp->h) * U.zoom * 0.85f, 2.0f);
         float x = area.x + U.ox + bp->x * U.zoom, y = area.y + U.oy + bp->y * U.zoom;
@@ -572,7 +575,7 @@ static void board_window(struct nk_context *ctx, float w, float h) {
         board_input(ctx, area);
         nk_push_scissor(cv, area);
         nk_fill_rect(cv, area, 0, nk_rgb(32, 34, 36));
-        struct nk_rect pcb = to_screen(area, bd_outline[0], bd_outline[1], bd_outline[2], bd_outline[3]);
+        struct nk_rect pcb = to_screen(area, BD()->outline[0], BD()->outline[1], BD()->outline[2], BD()->outline[3]);
         nk_fill_rect(cv, pcb, 8, COL_PCB);
         nk_stroke_rect(cv, pcb, 8, 2, COL_PCB_EDGE);
         sim_t *s = S();
@@ -595,7 +598,8 @@ static void board_window(struct nk_context *ctx, float w, float h) {
 
 static void monitor_window(struct nk_context *ctx, float x, float y) {
     board_monitor(U.b, U.monitor);
-    sg_update_image(U.img, &(sg_image_data){ .mip_levels[0] = SG_RANGE(U.monitor) });
+    size_t bytes = (size_t)M()->screen_w * M()->screen_h * sizeof(uint32_t);
+    sg_update_image(U.img, &(sg_image_data){ .mip_levels[0] = { U.monitor, bytes } });
     struct nk_rect r = nk_rect(x, y, RIGHT_W, MON_H + 44);
     nk_window_set_bounds(ctx, "Monitor", r);
     if (nk_begin(ctx, "Monitor", r, NK_WINDOW_TITLE | NK_WINDOW_BORDER | NK_WINDOW_NO_SCROLLBAR)) {
@@ -609,8 +613,17 @@ static void monitor_window(struct nk_context *ctx, float x, float y) {
 /* Oscilloscope                                                              */
 /* ------------------------------------------------------------------------ */
 
+/* Time bases: a whole screen is 16 to 4096 cycles (C64), always named
+ * in microseconds per division. */
 static const int timebase_cycles[] = { 16, 64, 256, 1024, 4096 };
-static const char *timebase_names[] = { "1.6 us/div", "6.5 us/div", "26 us/div", "104 us/div", "416 us/div" };
+#define NTIMEBASES 5
+
+static const char *timebase_name(int i) {
+    static char names[NTIMEBASES][24];
+    double us = timebase_cycles[i] * 1e6 / M()->cpu_hz / 10;
+    snprintf(names[i], sizeof(names[i]), us < 10 ? "%.1f us/div" : "%.0f us/div", us);
+    return names[i];
+}
 
 static void draw_scope(struct nk_command_buffer *cv, struct nk_rect r) {
     board_t *b = U.b;
@@ -626,7 +639,7 @@ static void draw_scope(struct nk_command_buffer *cv, struct nk_rect r) {
     }
     if (b->scope_pin < 0) return;
     uint32_t end = b->scope_pos;
-    uint32_t span = (uint32_t)timebase_cycles[U.timebase] * STEPS_PER_CYCLE;
+    uint32_t span = (uint32_t)timebase_cycles[U.timebase] * (uint32_t)M()->steps_per_cycle;
     uint32_t avail = end < SCOPE_SAMPLES ? end : SCOPE_SAMPLES;
     if (avail < span) return;
     uint32_t start = end - span;
@@ -690,7 +703,9 @@ static void scope_window(struct nk_context *ctx, float x, float y, float h) {
         nk_layout_row_push(ctx, 250);
         nk_label(ctx, label, NK_TEXT_LEFT);
         nk_layout_row_push(ctx, 110);
-        U.timebase = nk_combo(ctx, timebase_names, 5, U.timebase, 20, nk_vec2(120, 140));
+        const char *names[NTIMEBASES];
+        for (int i = 0; i < NTIMEBASES; i++) names[i] = timebase_name(i);
+        U.timebase = nk_combo(ctx, names, NTIMEBASES, U.timebase, 20, nk_vec2(120, 140));
         nk_layout_row_push(ctx, 80);
         nk_bool trig = U.trigger;
         nk_checkbox_label(ctx, "trigger", &trig);
@@ -709,17 +724,15 @@ static void scope_window(struct nk_context *ctx, float x, float y, float h) {
 /* Controls                                                                  */
 /* ------------------------------------------------------------------------ */
 
-#define BASIC_READY (3 * C64_FREQ)  /* from power on to READY, in cycles */
-
-/* A .prg goes into RAM; a .crt cartridge into the expansion port. A file
+/* Load a program or plug a cartridge (what the machine can take). A file
  * loaded goes on the list of recent ones. */
 static bool load_prg(const char *path, bool run) {
     size_t n = strlen(path);
     bool ok;
     if (n > 4 && !strcasecmp(path + n - 4, ".crt")) {
-        ok = board_insert_cart(U.b, path, U.status, sizeof(U.status));
+        ok = board_load(U.b, path, run, U.status, sizeof(U.status));
         if (ok) select_pin(U.b->scope_pin);
-    } else if (U.b->sim.cycle < BASIC_READY) {
+    } else if (U.b->sim.cycle < M()->ready_cycles) {
         /* Still booting: BASIC's cold start would wipe the program and
          * the RUN typed for it. Load it when BASIC is up. */
         snprintf(U.autoload, sizeof(U.autoload), "%s", path);
@@ -727,7 +740,7 @@ static bool load_prg(const char *path, bool run) {
         snprintf(U.status, sizeof(U.status), "%s: loading when BASIC is ready", path);
         ok = true;
     } else {
-        ok = board_load_prg(U.b, path, run, U.status, sizeof(U.status));
+        ok = board_load(U.b, path, run, U.status, sizeof(U.status));
     }
     if (ok) browser_add_recent(path);
     /* The panel is narrow: the file's name, not its whole path. */
@@ -790,7 +803,7 @@ static void controls_window(struct nk_context *ctx, float x, float y, float h) {
     if (nk_begin(ctx, "Controls", r, NK_WINDOW_TITLE | NK_WINDOW_BORDER)) {
         board_t *b = U.b;
         nk_layout_row_dynamic(ctx, 26, 4);
-        if (nk_widget_is_hovered(ctx)) nk_tooltip(ctx, "Switch the C64 off and on again: a restart (the faults stay)");
+        if (nk_widget_is_hovered(ctx)) nk_tooltip(ctx, "Switch the machine off and on again: a restart (the faults stay)");
         if (nk_button_label(ctx, "Power cycle")) { board_power_on(b); select_pin(b->scope_pin); }
         if (nk_widget_is_hovered(ctx)) nk_tooltip(ctx, "Undo every fault");
         if (nk_button_label(ctx, "Repair all")) board_clear_faults(b);
@@ -817,8 +830,7 @@ static void controls_window(struct nk_context *ctx, float x, float y, float h) {
         if ((down || U.reset_hold) != b->reset_button) board_set_reset_button(b, down || U.reset_hold);
         char info[200];
         snprintf(info, sizeof(info), "speed %.0f%%   time %.2f s   CPU %s",
-                 U.speed * 100, (double)b->sim.cycle / C64_FREQ,
-                 !b->cpu_running ? "stopped (no clock)" : b->cpu_in_reset ? "in reset" : "running");
+                 U.speed * 100, (double)b->sim.cycle / M()->cpu_hz, M()->cpu_status(b));
         nk_layout_row_dynamic(ctx, 20, 1);
         nk_label(ctx, info, NK_TEXT_LEFT);
 
@@ -856,14 +868,16 @@ static void controls_window(struct nk_context *ctx, float x, float y, float h) {
         }
         if (nk_tree_push(ctx, NK_TREE_TAB, "Programs and cartridges", NK_MAXIMIZED)) {
             /* The loopback harness of the 586220 diagnostic cartridge. */
-            nk_layout_row_dynamic(ctx, 22, 1);
-            if (nk_widget_is_hovered(ctx))
-                nk_tooltip(ctx, "Dongles on the user, cassette, serial, control ports and keyboard that loop "
-                                "them back, for the Diagnostic 586220 cartridge (the C64 is switched off and on)");
-            nk_bool harness = b->harness;
-            if (nk_checkbox_label(ctx, "586220 test harness plugged in", &harness) && harness != b->harness) {
-                board_set_harness(b, harness);
-                select_pin(b->scope_pin);
+            if (board_is_c64(b)) {
+                nk_layout_row_dynamic(ctx, 22, 1);
+                if (nk_widget_is_hovered(ctx))
+                    nk_tooltip(ctx, "Dongles on the user, cassette, serial, control ports and keyboard that loop "
+                                    "them back, for the Diagnostic 586220 cartridge (the C64 is switched off and on)");
+                nk_bool harness = board_harness(b);
+                if (nk_checkbox_label(ctx, "586220 test harness plugged in", &harness) && harness != board_harness(b)) {
+                    board_set_harness(b, harness);
+                    select_pin(b->scope_pin);
+                }
             }
             const char *cart = board_cart_name(b);
             if (cart) {
@@ -900,8 +914,7 @@ static void controls_window(struct nk_context *ctx, float x, float y, float h) {
             nk_tree_pop(ctx);
         }
         nk_layout_row_dynamic(ctx, 18, 1);
-        nk_label_colored(ctx, "Keys: ESC=RUN/STOP  PgUp=RESTORE  TAB=CTRL  ALT=C=",
-                         NK_TEXT_LEFT, COL_DIMTEXT);
+        nk_label_colored(ctx, M()->keys_help, NK_TEXT_LEFT, COL_DIMTEXT);
     }
     nk_end(ctx);
 }
@@ -938,19 +951,20 @@ static void *sim_main(void *arg) {
         if (running) {
             board_run(U.b, SIM_CHUNK);
             /* Once per emulated video frame: keyboard housekeeping. */
-            if ((frame_cycles += SIM_CHUNK) >= CYCLES_PER_FRAME) {
-                frame_cycles -= CYCLES_PER_FRAME;
+            if ((frame_cycles += SIM_CHUNK) >= U.b->m->cycles_per_frame) {
+                frame_cycles -= U.b->m->cycles_per_frame;
                 board_frame_update(U.b, 20000);
             }
         }
         uint64_t cycle = U.b->sim.cycle;
+        double hz = U.b->m->cpu_hz;
         pthread_mutex_unlock(&sim_lock);
         while (atomic_load(&ui_waiting)) sched_yield();
         /* Never run faster than a real C64 (unless warp), never try to
          * catch up when slower. */
         double now = stm_sec(stm_now());
         if (!running) { usleep(10000); ref_time = now; ref_cycle = cycle; continue; }
-        double ahead = (double)(cycle - ref_cycle) / C64_FREQ - (now - ref_time);
+        double ahead = (double)(cycle - ref_cycle) / hz - (now - ref_time);
         if (warp || cycle < ref_cycle || ahead < -0.05) { ref_time = now; ref_cycle = cycle; }
         else if (ahead > 0.002) usleep((useconds_t)(ahead * 1e6));
     }
@@ -969,12 +983,12 @@ static void update_status(void) {
     double dt = U.last_time ? now - U.last_time : 0;
     uint64_t cycle = U.b->sim.cycle;
     if (dt > 0 && cycle >= last_cycle) {
-        double sp = U.paused ? 0 : (double)(cycle - last_cycle) / (dt * C64_FREQ);
+        double sp = U.paused ? 0 : (double)(cycle - last_cycle) / (dt * M()->cpu_hz);
         U.speed = U.speed * 0.9 + sp * 0.1;
     }
     U.last_time = now;
     last_cycle = cycle;
-    if (U.autoload[0] && cycle >= BASIC_READY) {
+    if (U.autoload[0] && cycle >= M()->ready_cycles) {
         char path[sizeof(U.autoload)];
         snprintf(path, sizeof(path), "%s", U.autoload);
         U.autoload[0] = 0;
@@ -1036,26 +1050,6 @@ void ui_frame(void) {
 /* Events                                                                    */
 /* ------------------------------------------------------------------------ */
 
-static int special_key(sapp_keycode k) {
-    switch (k) {
-    case SAPP_KEYCODE_ENTER: return C64_KEY_RETURN;
-    case SAPP_KEYCODE_BACKSPACE: return C64_KEY_DEL;
-    case SAPP_KEYCODE_LEFT: return C64_KEY_CSRLEFT;
-    case SAPP_KEYCODE_RIGHT: return C64_KEY_CSRRIGHT;
-    case SAPP_KEYCODE_UP: return C64_KEY_CSRUP;
-    case SAPP_KEYCODE_DOWN: return C64_KEY_CSRDOWN;
-    case SAPP_KEYCODE_HOME: return C64_KEY_HOME;
-    case SAPP_KEYCODE_ESCAPE: return C64_KEY_STOP;
-    case SAPP_KEYCODE_PAGE_UP: return C64_KEY_RESTORE;
-    case SAPP_KEYCODE_TAB: return C64_KEY_CTRL;
-    case SAPP_KEYCODE_LEFT_ALT: return C64_KEY_CBM;
-    case SAPP_KEYCODE_F1: return C64_KEY_F1;
-    case SAPP_KEYCODE_F3: return C64_KEY_F3;
-    case SAPP_KEYCODE_F5: return C64_KEY_F5;
-    case SAPP_KEYCODE_F7: return C64_KEY_F7;
-    default: return 0;
-    }
-}
 
 static void handle_event(const sapp_event *ev);
 
@@ -1078,8 +1072,8 @@ static void handle_event(const sapp_event *ev) {
     }
     /* A key released always reaches the C64, or a key held down while the
      * browser opened (Shift, say) would stay pressed. */
-    if (ev->type == SAPP_EVENTTYPE_KEY_UP && special_key(ev->key_code))
-        board_key_up(U.b, special_key(ev->key_code));
+    if (ev->type == SAPP_EVENTTYPE_KEY_UP && M()->host_key(ev->key_code))
+        board_key_up(U.b, M()->host_key(ev->key_code));
     /* While the browser is open the keys are for it, not for the C64. Its
      * find field is the only text field: the rest of the time the keyboard
      * is the C64's. (What snk_handle_event() returns is no help: it says
@@ -1088,13 +1082,11 @@ static void handle_event(const sapp_event *ev) {
     if (ev->type == SAPP_EVENTTYPE_CHAR) {
         int c = (int)ev->char_code;
         if (c < 32 || c >= 127 || (ev->modifiers & (SAPP_MODIFIER_CTRL | SAPP_MODIFIER_SUPER))) return;
-        /* The C64 types uppercase letters without shift. */
-        if (c >= 'a' && c <= 'z') c -= 32;
-        else if (c >= 'A' && c <= 'Z') c += 32;
+        c = M()->host_char(c);
         board_key_down(U.b, c);
         board_key_up(U.b, c);
     } else if (ev->type == SAPP_EVENTTYPE_KEY_DOWN) {
-        int k = special_key(ev->key_code);
+        int k = M()->host_key(ev->key_code);
         if (k) board_key_down(U.b, k);
     }
 }
@@ -1103,22 +1095,52 @@ static void handle_event(const sapp_event *ev) {
 /* Setup                                                                     */
 /* ------------------------------------------------------------------------ */
 
-void ui_init(board_t *b, const char *prg, const char *scope_pin) {
+/* Everything of the interface that depends on the board: at start, and
+ * when switching machines. */
+static void attach_board(board_t *b) {
     U.b = b;
     U.hover_pin = U.hover_part = -1;
-    U.trigger = true;
-    U.timebase = 1;
-    if (prg) { snprintf(U.autoload, sizeof(U.autoload), "%s", prg); U.autoload_run = true; }
+    U.menu_open = U.dragging = U.reset_hold = false;
+    U.fitted = false;           /* the new board fills the view */
+    free(U.net_state);
     U.net_state = calloc(b->sim.nnets, 1);
     b->pin_stats = true;        /* what each pin drives, for the inspector */
     compute_boxes();
-    U.img = sg_make_image(&(sg_image_desc){ .width = SCREEN_W, .height = SCREEN_H,
+    /* The monitor picture has the size of the machine's screen. */
+    free(U.monitor);
+    U.monitor = calloc((size_t)b->m->screen_w * b->m->screen_h, sizeof(uint32_t));
+    if (U.img.id) {
+        snk_destroy_image(U.snk_img);
+        sg_destroy_view(U.view);
+        sg_destroy_image(U.img);
+    }
+    U.img = sg_make_image(&(sg_image_desc){ .width = b->m->screen_w, .height = b->m->screen_h,
                                             .pixel_format = SG_PIXELFORMAT_RGBA8,
                                             .usage.dynamic_update = true });
     U.view = sg_make_view(&(sg_view_desc){ .texture.image = U.img });
+    U.snk_img = snk_make_image(&(snk_image_desc_t){ .texture_view = U.view, .sampler = U.smp });
+}
+
+/* Switch to another machine: its board replaces the one on the bench. */
+void ui_set_machine(const machine_t *m) {
+    if (U.b->m == m) return;
+    lock_board();
+    inspect_open(U.b, -1);
+    board_t *old = U.b;
+    attach_board(board_create(m));
+    board_destroy(old);
+    U.autoload[0] = 0;
+    U.status[0] = 0;
+    unlock_board();
+}
+
+void ui_init(board_t *b, const char *prg, const char *scope_pin) {
+    U.trigger = true;
+    U.timebase = 1;
+    if (prg) { snprintf(U.autoload, sizeof(U.autoload), "%s", prg); U.autoload_run = true; }
     U.smp = sg_make_sampler(&(sg_sampler_desc){ .min_filter = SG_FILTER_LINEAR, .mag_filter = SG_FILTER_LINEAR,
                                                 .wrap_u = SG_WRAP_CLAMP_TO_EDGE, .wrap_v = SG_WRAP_CLAMP_TO_EDGE });
-    U.snk_img = snk_make_image(&(snk_image_desc_t){ .texture_view = U.view, .sampler = U.smp });
+    attach_board(b);
     browser_init();
     if (scope_pin) {    /* --scope REF.PIN */
         char ref[16];
@@ -1159,7 +1181,7 @@ void ui_view(float cx, float cy, float zoom) {
 /* Emulated video frames since power on (50 per second). */
 int ui_emulated_frame(void) {
     lock_board();
-    int f = (int)(U.b->sim.cycle / CYCLES_PER_FRAME);
+    int f = (int)(U.b->sim.cycle / (uint64_t)U.b->m->cycles_per_frame);
     unlock_board();
     return f;
 }

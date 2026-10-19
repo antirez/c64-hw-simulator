@@ -16,8 +16,7 @@
  * Supported: the plain cartridges (CRT hardware type 0: 8K, 16K, Ultimax),
  * which is what the diagnostic cartridges are. Cartridges with bank
  * switching (type 1 and up) are refused with a message. */
-#include "board.h"
-#include "board_data.h"
+#include "c64.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,7 +35,7 @@ struct cart {
 static const char *const pad_a[13] = { "Y", "X", "W", "V", "U", "T", "S", "R", "P", "N", "M", "L", "K" };
 static const char *const pad_d[8] = { "21", "20", "19", "18", "17", "16", "15", "14" };
 
-static int cn6_pin(board_t *b, const char *pad) { return board_pad_pin(b, b->p_cn6, pad); }
+static int cn6_pin(board_t *b, const char *pad) { return board_pad_pin(b, C64(b)->p_cn6, pad); }
 
 /* The ROM selected by the PLA drives the data bus; the address is A0-A12
  * (8K). If a fault pulls both lines low, the ROML chip answers: on a real
@@ -125,7 +124,7 @@ static struct cart *crt_load(const char *path, char *msg, int msglen) {
 /* Pin flags and drives for the cartridge, or back to a bare connector. */
 static void plug(board_t *b, struct cart *c) {
     sim_t *s = &b->sim;
-    part_t *p = &s->parts[b->p_cn6];
+    part_t *p = &s->parts[C64(b)->p_cn6];
     struct cart *old = p->state;
     struct cart *k = c ? c : old;
     int ins[15], nin = 0, outs[10], nout = 0;
@@ -145,10 +144,11 @@ static void plug(board_t *b, struct cart *c) {
     if (c && c->exrom && c->pin_exrom >= 0) s->pins[c->pin_exrom].drive = DRIVE(S_SUPPLY, 0);
     p->state = c;
     p->eval = c ? cart_eval : NULL;
-    b->cart = c;
+    C64(b)->cart = c;
 }
 
 bool board_insert_cart(board_t *b, const char *path, char *msg, int msglen) {
+    if (!board_is_c64(b)) { snprintf(msg, msglen, "cartridges go in the C64"); return false; }
     struct cart *c = crt_load(path, msg, msglen);
     if (!c) return false;
     c->pin_roml = cn6_pin(b, "11");
@@ -169,7 +169,8 @@ bool board_insert_cart(board_t *b, const char *path, char *msg, int msglen) {
 }
 
 void board_remove_cart(board_t *b) {
-    struct cart *c = b->cart;
+    if (!board_is_c64(b)) return;
+    struct cart *c = C64(b)->cart;
     if (!c) return;
     plug(b, NULL);
     free(c);
@@ -178,5 +179,6 @@ void board_remove_cart(board_t *b) {
 }
 
 const char *board_cart_name(board_t *b) {
-    return b->cart ? ((struct cart *)b->cart)->name : NULL;
+    if (!board_is_c64(b) || !C64(b)->cart) return NULL;
+    return ((struct cart *)C64(b)->cart)->name;
 }

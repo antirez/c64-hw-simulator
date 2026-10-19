@@ -1,6 +1,7 @@
 /* main.c - c64-hw-sim entry point.
  *
  *   c64-hw-sim [program.prg | cartridge.crt] [--harness] [--fault SPEC]...
+ *       [--machine c64]
  *       Graphical simulator. The optional .prg is loaded and RUN after boot;
  *       a .crt cartridge is plugged into the expansion port before power on,
  *       --harness plugs the 586220 diagnostic harness.
@@ -38,6 +39,7 @@
  *                      CN6.B:open  R51:open  RP4:short  RESET:pressed */
 #include "sokol_headers.h"
 #include "board.h"
+#include "c64.h"
 #include "png.h"
 #include "ui.h"
 #include <stdio.h>
@@ -71,65 +73,18 @@ static struct {
     struct { int frame; char what[1024]; bool chars; size_t sent; } keys[16];
     int nkeys;
     bool browse;
+    const machine_t *machine;
 } args = { .frames = 60 };
 
 static board_t *board;
+
+/* The machines, for --machine. */
+static const machine_t *const machines[] = { &machine_c64 };
 
 static void apply_faults(void) {
     for (int i = 0; i < args.nfaults; i++)
         if (!board_apply_fault_spec(board, args.faults[i]))
             fprintf(stderr, "bad fault spec: %s\n", args.faults[i]);
-}
-
-/* Read the text on the monitor picture, like a person would: match every
- * 8x8 cell of the text area against the character ROM glyphs. Cells that
- * match no glyph are shown as '?'. This looks at the PICTURE, not at the
- * screen memory, so it shows what a broken machine really displays. */
-static int match_cell(const uint32_t *px, int x0, int y0, uint32_t bg) {
-    extern unsigned char dump_c64_char_bin[4096];
-    uint8_t cell[8];
-    for (int y = 0; y < 8; y++) {
-        cell[y] = 0;
-        for (int x = 0; x < 8; x++)
-            if (px[(y0 + y) * SCREEN_W + x0 + x] != bg) cell[y] |= (uint8_t)(0x80 >> x);
-    }
-    for (int c = 0; c < 128; c++) {
-        bool same = true, inv = true;
-        for (int y = 0; y < 8; y++) {
-            if (dump_c64_char_bin[c * 8 + y] != cell[y]) same = false;
-            if ((uint8_t)~dump_c64_char_bin[c * 8 + y] != cell[y]) inv = false;
-        }
-        if (same || inv) return c;
-    }
-    return -1;
-}
-
-static void monitor_text(void) {
-    static uint32_t px[SCREEN_W * SCREEN_H];
-    board_monitor(board, px);
-    /* The text window starts where the border ends (32,36 on a healthy
-     * machine); if there is no border, assume the normal position. */
-    uint32_t border = px[2 * SCREEN_W + 2];
-    int ox = 32, oy = 36;
-    for (int y = 20; y < 60; y++) if (px[y * SCREEN_W + SCREEN_W / 2] != border) { oy = y; break; }
-    for (int x = 16; x < 60; x++) if (px[(oy + 100) * SCREEN_W + x] != border) { ox = x; break; }
-    uint32_t bg = px[(oy + 100) * SCREEN_W + ox + 4];
-    for (int row = 0; row < 25; row++) {
-        char line[41];
-        for (int col = 0; col < 40; col++) {
-            int code = match_cell(px, ox + col * 8, oy + row * 8, bg);
-            char ch = '?';
-            if (code == 0) ch = '@';
-            else if (code >= 1 && code <= 26) ch = (char)('A' + code - 1);
-            else if (code >= 27 && code < 64) ch = "[\\]^_ !\"#$%&'()*+,-./0123456789:;<=>?"[code - 27];
-            else if (code >= 64) ch = '#';
-            line[col] = ch;
-        }
-        line[40] = 0;
-        int end = 40;
-        while (end > 0 && line[end - 1] == ' ') line[--end] = 0;
-        printf("|%s\n", line);
-    }
 }
 
 /* Plug the cartridge given on the command line. */
@@ -147,9 +102,11 @@ static void insert_cart(void) {
 static struct { bool lit; int lit_since, dark_since, cur, n, series[64]; } F;
 
 static bool screen_lit(void) {
-    static uint32_t px[SCREEN_W * SCREEN_H];
+    int w = board->m->screen_w, h = board->m->screen_h;
+    uint32_t *px = malloc((size_t)w * h * sizeof(uint32_t));
     board_monitor(board, px);
-    uint32_t c = px[(SCREEN_H / 2) * SCREEN_W + SCREEN_W / 2];
+    uint32_t c = px[(h / 2) * w + w / 2];
+    free(px);
     return ((c & 0xFF) * 299 + ((c >> 8) & 0xFF) * 587 + ((c >> 16) & 0xFF) * 114) / 1000 > 128;
 }
 
@@ -180,6 +137,8 @@ static int run_headless(void) {
     clock_t t0 = clock();
     const char *type = getenv("C64HW_TYPE");     /* text to type after boot */
     int typed = 0;
+    const machine_t *m = board->m;
+    int ready = (int)(m->ready_cycles / (uint64_t)m->cycles_per_frame);
     for (int f = 0; f < args.headless_frames; f++) {
         if (args.fault_after && f == args.fault_after) apply_faults();
         for (int i = 0; i < args.nat; i++) {        /* scheduled faults/repairs */
@@ -188,31 +147,31 @@ static int run_headless(void) {
             else if (!board_apply_fault_spec(board, args.at[i].spec))
                 fprintf(stderr, "bad fault spec: %s\n", args.at[i].spec);
         }
-        board_run(board, CYCLES_PER_FRAME);
+        board_run(board, m->cycles_per_frame);
         board_frame_update(board, 20000);
         if (args.flashes) flash_frame(f);
-        /* After 3 seconds BASIC is ready: load the program and type. */
-        if (args.prg && f == 150) {
-            board_load_prg(board, args.prg, true, msg, sizeof(msg));
+        /* Once BASIC is ready: load the program and type. */
+        if (args.prg && f == ready) {
+            board_load(board, args.prg, true, msg, sizeof(msg));
             printf("%s\n", msg);
         }
-        if (type && f >= 160 && f % 4 == 0 && type[typed]) {
+        if (type && f >= ready + 10 && f % 4 == 0 && type[typed]) {
             int c = type[typed++];
-            if (c == '\n') c = C64_KEY_RETURN;
-            else if (c >= 'a' && c <= 'z') c -= 32;
+            if (c == '\n') c = m->host_key(SAPP_KEYCODE_ENTER);
+            else if (c >= 'a' && c <= 'z') c = m->host_char(c);
             board_key_down(board, c);
             board_key_up(board, c);
         }
     }
     double secs = (double)(clock() - t0) / CLOCKS_PER_SEC;
-    double emulated = args.headless_frames * (double)CYCLES_PER_FRAME / C64_FREQ;
+    double emulated = args.headless_frames * (double)m->cycles_per_frame / m->cpu_hz;
     printf("emulated %.2f s in %.2f s (%.0f%% of real time)\n", emulated, secs, 100.0 * emulated / secs);
-    printf("CPU: PC=%04X A=%02X X=%02X Y=%02X S=%02X %s\n", m6502_pc(&board->cpu), m6502_a(&board->cpu),
-           m6502_x(&board->cpu), m6502_y(&board->cpu), m6502_s(&board->cpu),
-           !board->cpu_running ? "(no clock)" : board->cpu_in_reset ? "(in reset)" : "");
+    char regs[128];
+    m->cpu_regs(board, regs, sizeof(regs));
+    printf("CPU: %s\n", regs);
     if (board->check) printf("self-check errors: %llu\n", (unsigned long long)board->check_errors);
     if (args.flashes) flash_report();
-    if (args.text) monitor_text();
+    if (args.text) m->print_text(board);
     if (args.nets) {    /* nets that spent time in contention, and who fights */
         sim_t *s = &board->sim;
         for (int i = 0; i < s->nnets; i++) {
@@ -231,9 +190,10 @@ static int run_headless(void) {
         }
     }
     if (args.shot) {
-        static uint32_t pixels[SCREEN_W * SCREEN_H];
+        uint32_t *pixels = malloc((size_t)m->screen_w * m->screen_h * sizeof(uint32_t));
         board_monitor(board, pixels);
-        png_write(args.shot, pixels, SCREEN_W, SCREEN_H);
+        png_write(args.shot, pixels, m->screen_w, m->screen_h);
+        free(pixels);
         printf("screen saved to %s\n", args.shot);
     }
     return 0;
@@ -370,6 +330,13 @@ int main(int argc, char **argv) {
                 args.keys[args.nkeys++].chars = chars;
             }
         }
+        else if (!strcmp(argv[i], "--machine") && i + 1 < argc) {
+            const char *id = argv[++i];
+            args.machine = NULL;
+            for (size_t k = 0; k < sizeof(machines) / sizeof(machines[0]); k++)
+                if (!strcmp(machines[k]->id, id)) args.machine = machines[k];
+            if (!args.machine) { fprintf(stderr, "unknown machine %s\n", id); return 1; }
+        }
         else if (!strcmp(argv[i], "--flashes")) args.flashes = true;
         else if (!strcmp(argv[i], "--text")) args.text = true;
         else if (!strcmp(argv[i], "--nets")) args.nets = true;
@@ -381,7 +348,7 @@ int main(int argc, char **argv) {
             else args.prg = argv[i];
         }
     }
-    board = board_create();
+    board = board_create(args.machine ? args.machine : &machine_c64);
     if (args.headless_frames > 0) return run_headless();
     sapp_run(&(sapp_desc){
         .init_cb = init,

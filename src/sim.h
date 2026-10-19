@@ -41,6 +41,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "board_data.h"
 
 /* Drive strengths. */
 enum { S_Z = 0, S_PULL = 1, S_STRONG = 2, S_SUPPLY = 3 };
@@ -157,7 +158,17 @@ struct part {
 #define SIM_MAX_PARTS 256
 #define SIM_QUEUE_SIZE 512      /* power of two, > SIM_MAX_PARTS */
 
+/* What the engine needs to know about a board besides its tables. */
+typedef struct {
+    int (*rail_of)(const char *net);    /* RAIL_* of a net, by name */
+    int (*kind_of)(const char *ref);    /* PART_* of a part, by reference */
+    double cycles_per_us;               /* board clock: sim->cycle units per
+                                           microsecond (the C64 counts 1.0) */
+} sim_desc_t;
+
 struct sim {
+    const board_data_t *bd;         /* the board tables */
+    double time_scale;              /* sim_desc_t.cycles_per_us */
     pin_t *pins; int npins;
     const char **pin_names;         /* datasheet pin names (NULL if unknown) */
     net_t *nets; int nnets;
@@ -182,7 +193,9 @@ struct sim {
 };
 
 /* Set up pins/nets/parts from the generated board tables. */
-void sim_init(sim_t *s);
+void sim_init(sim_t *s, const board_data_t *bd, const sim_desc_t *desc);
+/* Free everything sim_init() and the parts allocated (part states too). */
+void sim_free(sim_t *s);
 /* Rebuild merged nets (call after changing links, keys, faults). */
 void sim_rebuild(sim_t *s);
 /* Add a "join" between two nets for the next rebuild (links, keys). */

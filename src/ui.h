@@ -5,6 +5,8 @@
 #include "board.h"
 
 void ui_init(board_t *b, const char *prg, const char *scope_pin);
+/* Put another machine on the bench (the current board goes away). */
+void ui_set_machine(const machine_t *m);
 void ui_frame(void);
 void ui_event(const sapp_event *ev);
 void ui_save_screenshot(const char *path);

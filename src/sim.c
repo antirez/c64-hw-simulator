@@ -1,6 +1,5 @@
 /* sim.c - the electrical net engine. See sim.h for the concepts. */
 #include "sim.h"
-#include "board_data.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -15,29 +14,14 @@ static int *join_a, *join_b, njoin, join_cap;
 /* Setup                                                                     */
 /* ------------------------------------------------------------------------ */
 
-static int rail_of(const char *name) {
-    if (!strcmp(name, "Earth")) return RAIL_GND;
-    if (!strcmp(name, "+5V") || !strcmp(name, "+Vc") || !strcmp(name, "CAN+5V") ||
-        !strcmp(name, "+12V") || !strcmp(name, "5V_joyport") || !strcmp(name, "5V_FB3"))
-        return RAIL_VCC;
-    return RAIL_NONE;
-}
-
-static int part_kind_of(const char *ref) {
-    if (ref[0] == 'U') return PART_IC;
-    if (ref[0] == 'R') return PART_RESISTOR;   /* R and RP */
-    if (!strncmp(ref, "FB", 2) || ref[0] == 'L' || ref[0] == 'F' ||
-        (ref[0] == 'E' && ref[1] >= '0' && ref[1] <= '9')) return PART_LINK;
-    if (!strncmp(ref, "CN", 2)) return PART_CONNECTOR;
-    return PART_OTHER;
-}
-
-void sim_init(sim_t *s) {
+void sim_init(sim_t *s, const board_data_t *bd, const sim_desc_t *desc) {
     memset(s, 0, sizeof(*s));
-    s->npins = bd_npads;
+    s->bd = bd;
+    s->time_scale = desc->cycles_per_us;
+    s->npins = bd->npads;
     s->pins = calloc(s->npins, sizeof(pin_t));
     s->pin_names = calloc(s->npins, sizeof(char *));
-    s->nnets = bd_nnets;
+    s->nnets = bd->nnets;
     s->nets = calloc(s->nnets, sizeof(net_t));
     s->nread = calloc(s->nnets, 1);
     s->open_since = calloc(s->npins, sizeof(uint64_t));
@@ -45,19 +29,19 @@ void sim_init(sim_t *s) {
     sim_seed(s, 1);
     compute_hold_times(s);
     for (int i = 0; i < s->nnets; i++) {
-        s->nets[i].name = bd_nets[i];
+        s->nets[i].name = bd->nets[i];
         s->nets[i].root = i;
         s->nets[i].busbit = -1;
-        s->nets[i].rail = rail_of(bd_nets[i]);
+        s->nets[i].rail = (uint8_t)desc->rail_of(bd->nets[i]);
         s->nets[i].level = s->nets[i].rail == RAIL_VCC;
     }
     /* One part per footprint, one pin per pad. */
-    for (int c = 0; c < bd_ncomps && s->nparts < SIM_MAX_PARTS; c++) {
-        const bd_comp_t *bc = &bd_comps[c];
+    for (int c = 0; c < bd->ncomps && s->nparts < SIM_MAX_PARTS; c++) {
+        const bd_comp_t *bc = &bd->comps[c];
         part_t *p = &s->parts[s->nparts];
         p->ref = bc->ref;
         p->name = bc->value;
-        p->kind = part_kind_of(bc->ref);
+        p->kind = desc->kind_of(bc->ref);
         p->first_pin = bc->first_pad;
         p->npins = bc->npads;
         for (int i = 0; i < 48; i++) p->pinmap[i] = -1;
@@ -65,14 +49,27 @@ void sim_init(sim_t *s) {
             int pi = bc->first_pad + i;
             pin_t *pin = &s->pins[pi];
             pin->part = (int16_t)s->nparts;
-            pin->net = (int16_t)bd_pads[pi].net;
+            pin->net = (int16_t)bd->pads[pi].net;
             pin->root = pin->net;
-            pin->number = (int16_t)atoi(bd_pads[pi].name);
+            pin->number = (int16_t)atoi(bd->pads[pi].name);
             if (pin->number > 0 && pin->number < 48) p->pinmap[pin->number] = pi;
         }
         s->nparts++;
     }
     sim_rebuild(s);
+}
+
+void sim_free(sim_t *s) {
+    for (int i = 0; i < s->nnets; i++) {
+        free(s->nets[i].pins);
+        free(s->nets[i].readers);
+        free(s->nets[i].switches);
+    }
+    for (int i = 0; i < s->npins; i++) free((char *)s->pin_names[i]);
+    for (int i = 0; i < s->nparts; i++) free(s->parts[i].state);
+    free(s->pins); free(s->pin_names); free(s->nets); free(s->nread);
+    free(s->open_since); free(s->noisy); free(s->commit_list);
+    memset(s, 0, sizeof(*s));
 }
 
 void sim_set_bus_bit(sim_t *s, int net, int bit) {
@@ -202,7 +199,8 @@ static double drift(double v0, double rest, double tau, uint64_t age) {
 static void compute_hold_times(sim_t *s) {
     for (int t = 0; t < 2; t++)
         for (int l = 0; l < 2; l++) {
-            double v0 = l ? V_HIGH : 0, rest = t ? V_TTL_REST : 0, tau = t ? TAU_TTL : TAU_MOS;
+            double v0 = l ? V_HIGH : 0, rest = t ? V_TTL_REST : 0;
+            double tau = (t ? TAU_TTL : TAU_MOS) * s->time_scale;
             double lo = V_TH - V_BAND, hi = V_TH + V_BAND, d;
             if (v0 >= lo && v0 <= hi) d = 0;
             else if ((v0 < lo && rest < lo) || (v0 > hi && rest > hi)) d = INFINITY;
@@ -219,14 +217,14 @@ static inline void set_hold(sim_t *s, net_t *n) {
 int sim_read_floating(sim_t *s, int pin) {
     const net_t *n = &s->nets[s->pins[pin].root];
     double v = drift(n->level ? V_HIGH : 0, n->ttl_loaded ? V_TTL_REST : 0,
-                     n->ttl_loaded ? TAU_TTL : TAU_MOS, s->cycle - n->float_since);
+                     (n->ttl_loaded ? TAU_TTL : TAU_MOS) * s->time_scale, s->cycle - n->float_since);
     return v + noise(s) > threshold(pin);
 }
 
 int sim_read_open(sim_t *s, int pin) {
     const pin_t *p = &s->pins[pin];
     const part_t *part = &s->parts[p->part];
-    double v = drift(p->held ? V_HIGH : 0, V_OPEN_REST, TAU_OPEN, s->cycle - s->open_since[pin]);
+    double v = drift(p->held ? V_HIGH : 0, V_OPEN_REST, TAU_OPEN * s->time_scale, s->cycle - s->open_since[pin]);
     /* Crosstalk from the neighbour pins on the same side of the package. */
     int half = part->npins / 2, num = p->number;
     for (int d = -1; d <= 1; d += 2) {

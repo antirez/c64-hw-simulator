@@ -443,7 +443,7 @@ static void net_label(board_t *b, int pin, char *buf, size_t len) {
             const part_t *op = &s->parts[s->pins[o].part];
             if (o == pin || op->kind != prefer[pass]) continue;
             if (op->kind == PART_IC || op->kind == PART_CONNECTOR)
-                snprintf(buf, len, "to %s.%s", op->ref, bd_pads[o].name);
+                snprintf(buf, len, "to %s.%s", op->ref, b->sim.bd->pads[o].name);
             else
                 snprintf(buf, len, "to %s", op->ref);
             return;
@@ -739,11 +739,11 @@ static void pin_details(board_t *b, const uint8_t *ns, int pin, char *l1, char *
         char item[80];
         if (op->kind == PART_IC) {
             const char *on = sim_pin_name(s, o);
-            snprintf(item, sizeof(item), " %s.%s %s (%s)", op->ref, bd_pads[o].name, on ? on : "",
+            snprintf(item, sizeof(item), " %s.%s %s (%s)", op->ref, b->sim.bd->pads[o].name, on ? on : "",
                      board_part_label(b, s->pins[o].part));
         } else if (op->kind == PART_CONNECTOR) {
             const char *f = board_pin_func(b, o);
-            snprintf(item, sizeof(item), " %s.%s %s", op->ref, bd_pads[o].name, f ? f : "");
+            snprintf(item, sizeof(item), " %s.%s %s", op->ref, b->sim.bd->pads[o].name, f ? f : "");
         } else if (op->kind == PART_RESISTOR) {
             snprintf(item, sizeof(item), " %s %s%s", op->ref, op->name, is_pullup(b, o) ? " pull-up" : "");
         } else {
