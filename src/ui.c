@@ -120,6 +120,14 @@ static void compute_boxes(void) {
             float m = pad / 2 + 0.4f;
             U.box[i] = (box_t){ x0 - m, y0 - m, x1 + m, y1 + m };
         }
+        /* Big pads at the edge (the Spectrum's TV socket) would push the
+         * box off the board: keep it inside. */
+        const float *o = BD()->outline, in = 0.4f;
+        box_t *bx = &U.box[i];
+        if (bx->x0 < o[0] + in) bx->x0 = o[0] + in;
+        if (bx->y0 < o[1] + in) bx->y0 = o[1] + in;
+        if (bx->x1 > o[2] - in) bx->x1 = o[2] - in;
+        if (bx->y1 > o[3] - in) bx->y1 = o[3] - in;
     }
 }
 
