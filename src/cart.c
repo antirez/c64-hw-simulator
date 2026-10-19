@@ -36,12 +36,7 @@ struct cart {
 static const char *const pad_a[13] = { "Y", "X", "W", "V", "U", "T", "S", "R", "P", "N", "M", "L", "K" };
 static const char *const pad_d[8] = { "21", "20", "19", "18", "17", "16", "15", "14" };
 
-static int cn6_pin(board_t *b, const char *pad) {
-    const part_t *p = &b->sim.parts[b->p_cn6];
-    for (int k = 0; k < p->npins; k++)
-        if (!strcmp(bd_pads[p->first_pin + k].name, pad)) return p->first_pin + k;
-    return -1;
-}
+static int cn6_pin(board_t *b, const char *pad) { return board_pad_pin(b, b->p_cn6, pad); }
 
 /* The ROM selected by the PLA drives the data bus; the address is A0-A12
  * (8K). If a fault pulls both lines low, the ROML chip answers: on a real
@@ -87,6 +82,10 @@ static struct cart *crt_load(const char *path, char *msg, int msglen) {
     }
     struct cart *c = calloc(1, sizeof(*c));
     memcpy(c->name, name, sizeof(c->name));
+    if (!c->name[0]) {      /* no name in the file: use the file name */
+        const char *base = strrchr(path, '/') ? strrchr(path, '/') + 1 : path;
+        snprintf(c->name, sizeof(c->name), "%.*s", (int)strcspn(base, "."), base);
+    }
     /* The header gives the levels of the two lines: 0 means held low. */
     c->exrom = buf[0x18] == 0;
     c->game = buf[0x19] == 0;

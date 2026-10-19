@@ -21,7 +21,8 @@ freely, subject to the following restrictions:
 Parts of this repository come from others and keep their own licenses:
 
 - chips/*.h: Andre Weissflog's chips emulators, zlib license (the notice
-  is in each file). chips/m6569.h is an altered version, marked as such.
+  is in each file). chips/m6569.h, m6526.h and m6581.h are altered
+  versions, marked as such.
 - chips/c64-roms.h: images of the Commodore 64 ROMs (BASIC, KERNAL,
   character generator). They belong to their copyright holders and are
   not covered by this license.

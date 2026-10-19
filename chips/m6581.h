@@ -8,6 +8,9 @@
 
     Modified for c64-llm; see docs/sid.md for changes and hardware references.
 
+    ALTERED VERSION, modified again for c64-hw-sim: the POT X/Y registers
+    return the values the board measured (pot[], set by the board).
+
     Do this:
     ~~~C
     #define CHIPS_IMPL
@@ -238,6 +241,8 @@ typedef struct {
     */
     uint8_t bus_value;
     uint16_t bus_decay;
+    /* c64-hw-sim: POT X/Y, as measured on the POT pins by the board */
+    uint8_t pot[2];
     // voice state
     m6581_voice_t voice[3];
     // filter state
@@ -751,8 +756,8 @@ static uint64_t _m6581_read(m6581_t* sid, uint64_t pins) {
     switch (reg) {
         case M6581_POT_X:
         case M6581_POT_Y:
-            /* FIXME: potentiometers */
-            data = 0xFF;
+            /* c64-hw-sim: measured by the board (see board_pot_value) */
+            data = sid->pot[reg - M6581_POT_X];
             break;
         case M6581_OSC3RAND:
             data = sid->voice[2].wav_output >> 4;

@@ -28,6 +28,7 @@
 #define COL_FAULT     nk_rgb(255, 150, 0)
 #define COL_HOVER     nk_rgb(0, 255, 255)
 #define COL_TRACE     nk_rgb(90, 255, 120)
+#define COL_HARNESS   nk_rgb(150, 160, 255)
 
 /* Chip names are colored by role (see ROLE_* in board.h). */
 static const struct nk_color role_color[] = {

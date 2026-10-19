@@ -1,8 +1,9 @@
 /* main.c - c64-hw-sim entry point.
  *
- *   c64-hw-sim [program.prg | cartridge.crt] [--fault SPEC]...
+ *   c64-hw-sim [program.prg | cartridge.crt] [--harness] [--fault SPEC]...
  *       Graphical simulator. The optional .prg is loaded and RUN after boot;
- *       a .crt cartridge is plugged into the expansion port before power on.
+ *       a .crt cartridge is plugged into the expansion port before power on,
+ *       --harness plugs the 586220 diagnostic harness.
  *
  *   c64-hw-sim --headless FRAMES [--shot out.png] [--text] [--fault SPEC]... [prg]
  *       Run without a window for FRAMES video frames (50 per second), then
@@ -42,6 +43,7 @@
 static struct {
     const char *prg;
     const char *crt;
+    bool harness;
     const char *shot;
     const char *screenshot;
     int headless_frames;
@@ -124,6 +126,7 @@ static void monitor_text(void) {
 /* Plug the cartridge given on the command line. */
 static void insert_cart(void) {
     char msg[256];
+    if (args.harness) board_set_harness(board, true);
     if (!args.crt) return;
     if (!board_insert_cart(board, args.crt, msg, sizeof(msg))) fprintf(stderr, "%s\n", msg);
     else printf("%s\n", msg);
@@ -278,6 +281,7 @@ int main(int argc, char **argv) {
                        &args.clicks[args.nclicks].frame) == 3)
                 args.clicks[args.nclicks++].down = down;
         }
+        else if (!strcmp(argv[i], "--harness")) args.harness = true;
         else if (!strcmp(argv[i], "--text")) args.text = true;
         else if (!strcmp(argv[i], "--nets")) args.nets = true;
         else if (!strcmp(argv[i], "--fault") && i + 1 < argc && args.nfaults < 64) args.faults[args.nfaults++] = argv[++i];

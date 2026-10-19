@@ -324,6 +324,12 @@ static void draw_part(struct nk_command_buffer *cv, struct nk_context *ctx, stru
     case PART_CONNECTOR: {
         /* A cartridge in the expansion port: a board under the pins. */
         const char *cart = i == U.b->p_cn6 ? board_cart_name(U.b) : NULL;
+        /* A dongle of the 586220 harness: an outline around the connector. */
+        static const char *const harness_cn[] = { "CN1", "CN2", "CN3", "CN4", "CN8", "CN9" };
+        bool dongle = false;
+        for (size_t k = 0; U.b->harness && k < sizeof(harness_cn) / sizeof(harness_cn[0]); k++)
+            if (!strcmp(p->ref, harness_cn[k])) dongle = true;
+        if (dongle) nk_stroke_rect(cv, nk_rect(r.x - 4, r.y - 4, r.w + 8, r.h + 8), 3, 2, COL_HARNESS);
         if (cart) {
             nk_fill_rect(cv, nk_rect(r.x - 6, r.y - 6, r.w + 12, r.h + 12), 3, nk_rgb(60, 50, 40));
             nk_stroke_rect(cv, nk_rect(r.x - 6, r.y - 6, r.w + 12, r.h + 12), 3, 2, COL_SOCKET);
@@ -333,10 +339,13 @@ static void draw_part(struct nk_command_buffer *cv, struct nk_context *ctx, stru
         char lab[96];
         const char *cname = board_connector_name(U.b, i);
         if (cart) snprintf(lab, sizeof(lab), "%s cartridge: %s", p->ref, cart);
-        else snprintf(lab, sizeof(lab), "%s %s", p->ref, cname ? cname : "");
-        if (!cart && (!cname || text_width(ctx, lab) > r.w + 30)) snprintf(lab, sizeof(lab), "%s", p->ref);
+        else snprintf(lab, sizeof(lab), "%s %s%s", p->ref, cname ? cname : "", dongle ? " + harness" : "");
+        if (!cart && (!cname || text_width(ctx, lab) > r.w + 30))
+            snprintf(lab, sizeof(lab), "%s%s", p->ref, dongle ? " + harness" : "");
         if (cart)       /* always shown: a cartridge is easy to forget */
             text_centered(cv, ctx, nk_rect(r.x - 100, r.y - 22, r.w + 200, 14), lab, COL_SOCKET);
+        else if (dongle)
+            text_centered(cv, ctx, nk_rect(r.x - 60, r.y - 18, r.w + 120, 14), lab, COL_HARNESS);
         else if (r.w + 30 > text_width(ctx, lab))
             text_centered(cv, ctx, nk_rect(r.x - 15, r.y - 14, r.w + 30, 14), lab, COL_DIMTEXT);
         break;
@@ -879,6 +888,16 @@ static void controls_window(struct nk_context *ctx, float x, float y, float h) {
             nk_tree_pop(ctx);
         }
         if (nk_tree_push(ctx, NK_TREE_TAB, "Programs and cartridges", NK_MAXIMIZED)) {
+            /* The loopback harness of the 586220 diagnostic cartridge. */
+            nk_layout_row_dynamic(ctx, 22, 1);
+            if (nk_widget_is_hovered(ctx))
+                nk_tooltip(ctx, "Dongles on the user, cassette, serial, control ports and keyboard that loop "
+                                "them back, for the Diagnostic 586220 cartridge (the C64 is switched off and on)");
+            nk_bool harness = b->harness;
+            if (nk_checkbox_label(ctx, "586220 test harness plugged in", &harness) && harness != b->harness) {
+                board_set_harness(b, harness);
+                select_pin(b->scope_pin);
+            }
             const char *cart = board_cart_name(b);
             if (cart) {
                 char line[96];

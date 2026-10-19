@@ -79,6 +79,7 @@ typedef struct board {
      * index 0 = VIC, 1 = CIA1, 2 = CIA2, 3 = SID. */
     bool dout_en[4]; uint8_t dout_val[4];
     bool cia_irq[2];
+    uint8_t cia_outs[2];        /* /PC, SP, CNT as last driven */
     bool cpu_ticked;            /* the CPU core advanced in this cycle */
     /* Caches for part_drive_bus_cached() (speed only, see parts.h). */
     int32_t cache_cpu_addr, cache_cpu_data, cache_cpu_port, cache_vic_mux, cache_vic_addr,
@@ -123,6 +124,14 @@ typedef struct board {
     int pin_reset, pin_reset_gnd;
     /* Connectors: what each pin is for ("ATN"), NULL for other parts. */
     const char **pin_func;
+    /* The mains, as the board sees it through R5 and R100, and the
+     * cassette motor driver (see board.c). */
+    int pin_mains, p_r5, p_r100, pin_motor, pin_motor_ctl;
+    uint64_t mains_next, mains_edges;     /* next flip of the mains, flips so far */
+    /* The 586220 diagnostic harness (harness.c): plugged, and the level of
+     * WRITE that sets its switches. */
+    bool harness, harness_write;
+    int pin_hmotor, pin_hwrite, p_u28;
     /* The cartridge in the expansion port (cart.c), NULL if none. */
     void *cart;
     int p_cn6;
@@ -153,6 +162,9 @@ const char *board_part_label(board_t *b, int part);
 const char *board_part_info(board_t *b, int part);
 const char *board_part_detail(board_t *b, int part);
 int board_part_role(board_t *b, int part);
+/* The pin of a part by its pad name ("18", "B"; "D" or "4" for the
+ * cassette port's "D,4"), or -1. */
+int board_pad_pin(board_t *b, int part, const char *pad);
 /* Connectors: name ("SERIAL") and the function of a pin ("ATN"), or NULL. */
 const char *board_connector_name(board_t *b, int part);
 const char *board_pin_func(board_t *b, int pin);
@@ -177,6 +189,14 @@ bool board_load_prg(board_t *b, const char *path, bool run, char *err, int errle
 bool board_insert_cart(board_t *b, const char *path, char *msg, int msglen);
 void board_remove_cart(board_t *b);
 const char *board_cart_name(board_t *b);
+/* Plug or unplug the 586220 diagnostic harness (harness.c); the C64 is
+ * switched off and on. */
+void board_set_harness(board_t *b, bool plugged);
+/* For board.c: the harness connections, its per-cycle work, and the value
+ * the SID reads on a POT pin. */
+void harness_joins(board_t *b);
+void harness_tick(board_t *b);
+int board_pot_value(board_t *b, int sid_pin);
 
 /* The picture as the monitor shows it (black & white without color clock,
  * snow without a video signal). */

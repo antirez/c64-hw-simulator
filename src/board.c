@@ -374,6 +374,12 @@ static void cia_eval(sim_t *s, part_t *p) {
             pin_out(s, p, 2 + port * 8 + bit, (lows[port] >> bit) & 1 ? DRV_LO : DRV_PULLUP);
     }
     pin_out(s, p, 21, b->cia_irq[i] ? DRV_LO : DRV_Z);               /* /IRQ */
+    /* /PC: low for the cycle after an access to port B. SP and CNT: driven
+     * by the serial port in output mode only (pull-ups on the board). */
+    pin_out(s, p, 18, c->pc_low ? DRV_LO : DRV_HI);
+    bool sp_out = (c->ta.cr & (1 << 6)) != 0;
+    pin_out(s, p, 39, sp_out ? DRV_BIT(c->sp.sp_out) : DRV_Z);
+    pin_out(s, p, 40, sp_out ? DRV_BIT(c->sp.cnt_out) : DRV_Z);
     part_drive_bus_cached(s, p, cia_data_pins, 8, b->dout_val[DOUT_CIA1 + i], b->dout_en[DOUT_CIA1 + i],
                           &b->cache_cia_data[i]);
 }
@@ -405,8 +411,16 @@ static void cia_tick(board_t *b, int i) {
     } else {
         M6526_SET_PAB(pins, c->pa.inp, c->pb.inp);
     }
-    if (pin_in(s, p, 24)) pins |= M6526_FLAG;
+    /* /FLAG acts on a falling edge: the core flags a 0 to 1 change of
+     * M6526_FLAG, so the bit means "the pin is low". */
+    if (!pin_in(s, p, 24)) pins |= M6526_FLAG;
+    if (pin_in(s, p, 19)) pins |= M6526_TOD;     /* 50 Hz from the mains */
+    if (pin_in(s, p, 39)) pins |= M6526_SP;
+    if (pin_in(s, p, 40)) pins |= M6526_CNT;
     pins = m6526_tick(c, pins);
+    /* The pins cia_eval() drives from the core's state. */
+    uint8_t outs = (uint8_t)(c->pc_low | c->sp.sp_out << 1 | c->sp.cnt_out << 2 | ((c->ta.cr >> 6) & 1) << 3);
+    if (outs != b->cia_outs[i]) { b->cia_outs[i] = outs; sim_mark_dirty(s, b->p_cia[i]); }
     b->cia_irq[i] = (pins & M6526_IRQ) != 0;
     if ((pins & (M6526_CS | M6526_RW)) == (M6526_CS | M6526_RW))
         set_dout(b, DOUT_CIA1 + i, b->p_cia[i], M6526_GET_DATA(pins));
@@ -430,6 +444,12 @@ static void sid_tick(board_t *b) {
         if (pin_in(s, p, 7)) pins |= M6581_RW;
         M6502_SET_DATA(pins, part_read_bus(s, p, sid_data_pins, 8));
     }
+    /* POT X/Y: what the A/D converters measured on pins 24 and 23. */
+    if ((pins & (M6581_CS | M6581_RW)) == (M6581_CS | M6581_RW)) {
+        uint8_t reg = pins & M6581_ADDR_MASK;
+        if (reg == M6581_POT_X) b->sid.pot[0] = (uint8_t)board_pot_value(b, part_pin(p, 24));
+        if (reg == M6581_POT_Y) b->sid.pot[1] = (uint8_t)board_pot_value(b, part_pin(p, 23));
+    }
     pins = m6581_tick(&b->sid, pins);
     if ((pins & (M6581_CS | M6581_RW)) == (M6581_CS | M6581_RW))
         set_dout(b, DOUT_SID, b->p_sid, M6502_GET_DATA(pins));
@@ -439,9 +459,46 @@ static void sid_tick(board_t *b) {
 /* One cycle                                                                 */
 /* ------------------------------------------------------------------------ */
 
+/* The mains. The power supply brings 9 V AC to the board; R5, the zener
+ * CR1 and R100 clip it, and with R37 U27 squares it up (a Schmitt
+ * trigger): the 50 Hz of the CIAs' time of day clocks. That analog stage
+ * is not simulated, so this is what it puts on U27's input, through R100:
+ * a square wave at the mains frequency, 50 Hz (a PAL machine, in Europe).
+ * Like the power supply, it is an input to the board; opening R5 or R100
+ * cuts it, and U27 and the rest are simulated as usual. */
+#define MAINS_HZ 50
+
+static void mains_tick(board_t *b) {
+    sim_t *s = &b->sim;
+    if (b->pin_mains < 0) return;
+    /* The level flips every half period: (n * C64_FREQ) / (2 * MAINS_HZ). */
+    if (s->cycle >= b->mains_next) {
+        b->mains_edges = (s->cycle * (2 * MAINS_HZ)) / C64_FREQ + 1;
+        b->mains_next = (b->mains_edges * C64_FREQ + 2 * MAINS_HZ - 1) / (2 * MAINS_HZ);
+    }
+    bool on = s->parts[b->p_r5].rfault != RF_OPEN && s->parts[b->p_r100].rfault != RF_OPEN;
+    int level = (int)((b->mains_edges - 1) & 1);
+    sim_drive(s, b->pin_mains, on ? DRIVE(S_STRONG, level) : DRV_Z);
+}
+
+/* The cassette motor driver: 6510 P5 through R4 drives Q2, which keeps
+ * the Darlington Q1/Q3 off. With P5 low (or not driven: R3 pulls Q2's
+ * base down) Q3 puts about 6 V on the MOTOR pin. Analog, so modeled here
+ * by what it does: MOTOR is driven high while P5 isn't high. */
+static void motor_tick(board_t *b) {
+    sim_t *s = &b->sim;
+    if (b->pin_motor < 0 || b->pin_motor_ctl < 0) return;
+    const pin_t *c = &s->pins[b->pin_motor_ctl];
+    bool p5_high = c->root >= 0 && s->nets[c->root].strength != S_Z && s->nets[c->root].level;
+    sim_drive(s, b->pin_motor, p5_high ? DRV_Z : DRV_HI);
+}
+
 static void board_cycle(board_t *b) {
     sim_t *s = &b->sim;
     s->cycle++;
+    mains_tick(b);
+    motor_tick(b);
+    harness_tick(b);
     cpu_tick(b);
     vic_tick(b);                                    /* phi1 (and maybe a stolen phi2) */
     if (!b->vic_steal) bus_half(b, 2, false, 0);    /* phi2: the CPU's access */
@@ -623,6 +680,7 @@ void board_rebuild(board_t *b) {
         }
     if ((b->key_matrix[8] & 1) && b->pin_restore >= 0 && s->pins[b->pin_restore].fault != PF_OPEN)
         sim_join(s, s->pins[b->pin_restore].net, b->net_gnd);
+    harness_joins(b);
     /* The RESET button closes user port pin 3 (/RESET) to pin 1 (GND). */
     if (b->reset_button && b->pin_reset >= 0 && b->pin_reset_gnd >= 0 &&
         s->pins[b->pin_reset].fault != PF_OPEN && s->pins[b->pin_reset_gnd].fault != PF_OPEN)
@@ -702,14 +760,27 @@ static const struct { const char *ref, *name, *pins; } conn_defs[] = {
     { "CN10", "POWER LED", "1=LED+ 2=LED- 3=LED+" },
 };
 
-/* The pin of a part with the given pad name ("3", "C"), or -1. */
-static int connector_pin(board_t *b, int part, const char *pad) {
+/* Does a pad name match? The cassette port pads are named after both
+ * sides of the edge connector ("D,4"): either name matches. */
+static bool pad_matches(const char *name, const char *pad) {
+    size_t n = strlen(pad);
+    for (const char *s = name; *s; ) {
+        size_t len = strcspn(s, ",");
+        if (len == n && !strncmp(s, pad, n)) return true;
+        s += len + (s[len] == ',');
+    }
+    return false;
+}
+
+int board_pad_pin(board_t *b, int part, const char *pad) {
     if (part < 0) return -1;
     const part_t *p = &b->sim.parts[part];
     for (int k = 0; k < p->npins; k++)
-        if (!strcmp(bd_pads[p->first_pin + k].name, pad)) return p->first_pin + k;
+        if (pad_matches(bd_pads[p->first_pin + k].name, pad)) return p->first_pin + k;
     return -1;
 }
+
+static int connector_pin(board_t *b, int part, const char *pad) { return board_pad_pin(b, part, pad); }
 
 static void setup_connectors(board_t *b) {
     sim_t *s = &b->sim;
@@ -725,7 +796,7 @@ static void setup_connectors(board_t *b) {
             /* A pad name can repeat (both sides of an edge connector). */
             const part_t *p = &s->parts[part];
             for (int k = 0; k < p->npins; k++)
-                if (!strcmp(bd_pads[p->first_pin + k].name, tok)) b->pin_func[p->first_pin + k] = eq + 1;
+                if (pad_matches(bd_pads[p->first_pin + k].name, tok)) b->pin_func[p->first_pin + k] = eq + 1;
         }
         /* The strings stay allocated: they are the labels. */
     }
@@ -822,8 +893,16 @@ board_t *board_create(void) {
     b->pst_lo = calloc(s->npins, sizeof(uint32_t));
     b->pst_off = calloc(s->npins, sizeof(uint32_t));
     b->pst_weak = calloc(s->npins, sizeof(uint32_t));
+    b->p_r5 = sim_find_part(s, "R5");
+    b->p_r100 = sim_find_part(s, "R100");
+    b->pin_mains = b->p_r5 >= 0 && b->p_r100 >= 0 ? part_pin(&s->parts[b->p_r100], 2) : -1;
     b->p_pla = sim_find_part(s, "U17");
     b->p_cn6 = sim_find_part(s, "CN6");
+    b->p_u28 = sim_find_part(s, "U28");
+    int q3 = sim_find_part(s, "Q3");
+    b->pin_motor = q3 >= 0 ? part_pin(&s->parts[q3], 3) : -1;              /* emitter */
+    b->pin_motor_ctl = part_pin(&s->parts[b->p_cpu], 24);                    /* P5 */
+    b->pin_hmotor = b->pin_hwrite = -1;
     /* The RESET button sits on the user port, like a reset cartridge. */
     int user_port = sim_find_part(s, "CN2");
     b->pin_reset = connector_pin(b, user_port, "3");
@@ -837,6 +916,7 @@ board_t *board_create(void) {
 void board_power_on(board_t *b) {
     sim_t *s = &b->sim;
     s->cycle = 0;
+    b->mains_next = 0;
     b->cpu_pins = m6502_init(&b->cpu, &(m6502_desc_t){
         .m6510_in_cb = cpu_port_in,
         .m6510_out_cb = cpu_port_out,

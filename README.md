@@ -118,6 +118,14 @@ the KERNAL and runs on boards with dead RAM or ROMs. A cartridge only
 drives the expansion port pins, everything else is the board: a dirty
 contact on the port is a fault on a CN6 pin.
 
+Dead Test gives the flash codes of its manual (one flash for U12, bit 7,
+up to eight for U21, bit 0). For the Diagnostic 586220 cartridge you can
+plug in its test harness, the dongles that loop back the user port, the
+cassette port, the serial port, both control ports and the keyboard (as
+built by Sven Petersen, an open hardware copy of Commodore's). With it a
+healthy board passes every test, and a broken contact, chip or clock
+shows where Commodore's manual says it should.
+
 Type on your keyboard as usual. ESC is RUN/STOP, PgUp is RESTORE, TAB is
 CTRL, and left ALT is C=.
 
@@ -131,7 +139,8 @@ picture. A fault is written `REF:what` or `REF.PIN:what`:
 
     U17:removed   U21.14:gnd   U12.14:vcc   U9.2:open   CN6.B:open   RP4:short
 
-A .crt file given on the command line is plugged in before power on.
+A .crt file given on the command line is plugged in before power on,
+`--harness` plugs the 586220 test harness.
 
 Other options:
 
@@ -186,7 +195,9 @@ The noise is seeded, so a run can be repeated exactly.
 - the PLA, with its real logic equations.
 
 The 6510, VIC-II, CIAs and SID are cycle-accurate cores from floooh's
-chips. In `src/board.c` each core sits in a socket that sees only its pins.
+chips, with a few additions (marked in their headers): the CIAs' time of
+day clock, serial port and /PC handshake, the SID's paddle registers. In
+`src/board.c` each core sits in a socket that sees only its pins.
 Each half cycle runs in three steps: the row address, then /RAS falls,
 then /CAS falls. The whole board settles after each step.
 
@@ -202,7 +213,11 @@ The floating and power models have the right shape, but their numbers
 `src/sim.c`.
 
 These analog parts are not simulated: the video output, the SID filter,
-the power supply, and the dot clock PLL.
+the power supply, and the dot clock PLL. Three of them are modeled by what
+they do, because the logic depends on them: the 50 Hz from the mains that
+drives the time of day clocks, the cassette motor driver, and the SID's
+paddle A/D converters (the time the 1800 pF capacitor takes to charge
+through the paddle).
 
 Faults inside a chip, such as bad DRAM cells or slow parts, and bridges
 between two nets are planned but not done.
