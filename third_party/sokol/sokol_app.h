@@ -8450,7 +8450,11 @@ _SOKOL_PRIVATE bool _sapp_gl_select_fbconfig(_sapp_gl_fbselect* fbselect, const 
     if (desired->doublebuffer != current->doublebuffer) {
         return false;
     }
-    if (desired->srgb_capable != current->srgb_capable) {
+    // c64-hw-sim patch: an sRGB-capable format is fine when sRGB is not wanted
+    // (it only matters once GL_FRAMEBUFFER_SRGB is enabled). Some AMD drivers
+    // report every pixel format as sRGB-capable, which made this test reject
+    // them all (WIN32_WGL_FIND_PIXELFORMAT_FAILED).
+    if (desired->srgb_capable && !current->srgb_capable) {
         return false;
     }
 

@@ -83,7 +83,9 @@ Spectrum Diagnostics ROM is by Brendan Alford and its contributors (LGPL).
     make
     ./c64-hw-sim [program.prg]
 
-It runs on macOS and Linux (X11), with OpenGL. The graphics library (sokol)
+It runs on macOS, Linux (X11) and Windows, with OpenGL. On Windows, build
+with MinGW-w64 gcc from a POSIX shell (Git Bash or MSYS2), for example
+`mingw32-make`, then run `c64-hw-sim.exe`. The graphics library (sokol)
 and the interface library (nuklear) are in `third_party/`.
 
 ## Using it
