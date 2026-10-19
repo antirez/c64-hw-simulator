@@ -7,3 +7,4 @@
 #include "m6569.h"
 #include "m6581.h"
 #include "kbd.h"
+#include "z80.h"

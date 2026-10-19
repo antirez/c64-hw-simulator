@@ -2,3 +2,8 @@ build/
 c64-hw-sim
 *.dSYM/
 .DS_Store
+chips/codegen/.venv/
+chips/codegen/__pycache__/
+tests/z80/wave
+tests/z80/zex
+tests/z80/roms/
