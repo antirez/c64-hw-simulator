@@ -1,55 +1,62 @@
 # c64-hw-sim
 
-c64-hw-sim simulates the motherboard of the Commodore 64, ASSY 250407, pin
-by pin. You can lift the leg of a chip, short it to ground or to +5V, pull a
-chip out of its socket, or open a resistor. Then you watch what the machine
-does: the picture on the monitor, the keyboard, every signal on the board.
+c64-hw-sim simulates the motherboards of the Commodore 64 (ASSY 250407)
+and of the ZX Spectrum 48K (board Issue 3B), pin by pin. You can lift the
+leg of a chip, short it to ground or to +5V, pull a chip out of its
+socket, or open a resistor. Then you watch what the machine does: the
+picture on the monitor, the keyboard, every signal on the board.
 
 The program knows the board's netlist (the electrical connections on the
 PCB) and how each chip behaves at its pins. It knows nothing about what a
-broken Commodore 64 looks like: when you simulate a broken part and the
-screen fills with garbage, that garbage was computed from the circuit, not
-chosen by someone who knew what to expect.
+broken Commodore 64 or Spectrum looks like: when you simulate a broken
+part and the screen fills with garbage, that garbage was computed from
+the circuit, not chosen by someone who knew what to expect.
 
-It also simulates the ZX Spectrum 48K, board Issue 3B, in the same way
-(see [The ZX Spectrum 48K](#the-zx-spectrum-48k) below). A click switches
-the running simulation from one machine to the other.
-
-Here is an example. Lift pin 17 (A7) of the color RAM before power on, and
-the machine boots and looks healthy. The CPU writes and the VIC reads with
-the same wrong address, so the RAM simply aliases. Put the leg back, and
-the half of the color RAM that was never written shows up as random
-colors. Lift it again, and the screen is clean. A real 2114 does the same.
+Here is an example. Lift pin 17 (A7) of the C64 color RAM before power
+on, and the machine boots and looks healthy. The CPU writes and the VIC
+reads with the same wrong address, so the RAM simply aliases. Put the leg
+back, and the half of the color RAM that was never written shows up as
+random colors. Lift it again, and the screen is clean. A real 2114 does
+the same.
 
 With this program you can do mainly two things:
 
-1. Learn how the Commodore 64 works at a more intimate level, in a way that
-   is hard to reproduce on real hardware without the risk of damaging it
-   (and on most boards many chips are soldered, not socketed).
-2. If you have a broken C64 and some hypothesis about what could be broken,
-   simulate it with this program and perhaps gain clues, so that you can
-   desolder chips in the most logical order, and desolder as few of them as
-   possible (desoldering is a boring process, and every time it risks
-   damaging the board...). A matching symptom is a clue, not a proof:
-   different faults can look the same, and the simulation has its limits
-   (see below).
+1. Learn how the Commodore 64 and the Spectrum work at a more intimate
+   level, in a way that is hard to reproduce on real hardware without the
+   risk of damaging it (and on most boards many chips are soldered, not
+   socketed).
+2. If you have a broken C64 or Spectrum and some hypothesis about what
+   could be broken, simulate it with this program and perhaps gain clues,
+   so that you can desolder chips in the most logical order, and desolder
+   as few of them as possible (desoldering is a boring process, and every
+   time it risks damaging the board...). A matching symptom is a clue,
+   not a proof: different faults can look the same, and the simulation
+   has its limits (see below).
 
 Please note that **even on fast computers** this program struggles to
-simulate the C64 hardware at real speed. A real C64 is simulated at 31% of
+simulate these machines at real speed. A real C64 is simulated at 31% of
 its speed on an Apple M3 Max, 39% on an AMD Ryzen AI Max+ PRO 495 (Gorgon
-Halo), and 48% on an Apple M5 Max. The ZX Spectrum runs at 23%, 28% and
-34% of its speed on the same computers. This is not a problem for the goals of
-this program, but be warned: it is not an emulator to play games with.
+Halo), and 48% on an Apple M5 Max. The ZX Spectrum is simulated at 23%,
+28% and 34% of its speed on the same computers. This is not a problem for
+the goals of this program, but be warned: it is not an emulator to play
+games with.
+
+Why is the Spectrum slower to simulate than the C64, even though its
+board is simpler? Because of the time resolution. The ULA is simulated
+at a very low level, so that the bus contention just emerges from the
+simulation. Its signals are timed to the half period of its 14 MHz
+oscillator, so the whole board settles 28 million times per simulated
+second, against about 6 million for the C64.
 
 ![The character ROM pulled out while a BASIC program runs, then put back](docs/char-rom.gif)
 
-Above: the classic `10 PRINT CHR$(205.5+RND(1));:GOTO 10` maze is running
-when the character ROM (U5) is pulled out of its socket, and later put
-back. The CPU, the RAM and the program keep working; only the shapes of
-the characters are lost, as repairers know well. The scope is on the data
-line D0 of the ROM socket: with the socket empty, the bus floats (the
-dotted segments) whenever the VIC fetches a character shape. Shown at C64
-speed.
+Above: the classic C64 `10 PRINT CHR$(205.5+RND(1));:GOTO 10` maze is
+running when the character ROM (U5) is pulled out of its socket, and
+later put back. The CPU, the RAM and the program keep working; only the
+shapes of the characters are lost, as repairers know well. The scope is
+on the data line D0 of the ROM socket: with the socket empty, the bus
+floats (the dotted segments) whenever the VIC fetches a character shape.
+Shown at C64 speed.
 
 ## Acknowledgements
 
@@ -82,15 +89,9 @@ and the interface library (nuklear) are in `third_party/`.
 ## Using it
 
 The window shows the board, the monitor, a control panel and an
-oscilloscope.
-
-Chips are boxes named by role:
-
-- RAM1 to RAM8 are the 4164 DRAMs. Each one holds a single bit of every
-  byte: RAMn has data bit n-1.
-- VRAM is the 2114 color RAM.
-- BASIC, KERNAL and CHAR are the ROMs.
-- PLA is the address decoder.
+oscilloscope. The two buttons at the top of the control panel switch
+between the Commodore 64 and the ZX Spectrum 48K: the machine that runs
+is switched off, the other one on.
 
 Pins show their state as a logic probe would: red high, blue low, yellow
 pulsing, gray floating, magenta when two outputs fight. Zoom in and the
@@ -108,36 +109,48 @@ The inspector draws the chip large, like a datasheet: the pins numbered
 and colored, the nets outside, the gates inside, wired to their pins. A
 wire shows what is on it; the output of a gate shows what the gate itself
 drives, so a gate driving high into a net that stays low is plain to see.
-On a 7406 the output mark is the open collector transistor: blue while it
-pulls the line low, gray while it is off and the pull-up decides. For the
-PLA the inspector lists its product terms, lit while they are true, with
-every input colored by its level: which term selects what, and which
-input keeps a term from firing.
+
+Open (Ctrl+O, Cmd+O on the Mac) shows a file browser, starting in
+`carts/`. It lists folders and the files the running machine takes, and
+says what each file is, from its header, or why it can't be used. Type to
+narrow the list, or type a path and press Enter to go there. Arrows and
+Enter, or a double click, open a file; Backspace goes up; Esc closes.
+Recent files stay in the control panel, one click away, and files can be
+dropped on the window too.
+
+## Commodore 64
+
+Chips are boxes named by role:
+
+- RAM1 to RAM8 are the 4164 DRAMs. Each one holds a single bit of every
+  byte: RAMn has data bit n-1.
+- VRAM is the 2114 color RAM.
+- BASIC, KERNAL and CHAR are the ROMs.
+- PLA is the address decoder.
+
+In the inspector, the output mark of a 7406 is the open collector
+transistor: blue while it pulls the line low, gray while it is off and
+the pull-up decides. For the PLA the inspector lists its product terms,
+lit while they are true, with every input colored by its level: which
+term selects what, and which input keeps a term from firing.
 
 RESET works like a reset cartridge: it shorts /RESET to GND on the user
 port. Hold it, or keep it pressed to look at the board in reset. The CPU,
 the CIAs and the SID reset; the VIC, which has no reset pin, and the RAM
 don't. Power cycle switches the C64 off and on again.
 
-Open (Ctrl+O, Cmd+O on the Mac) shows a file browser, starting in
-`carts/`. It lists folders, programs and cartridges, and says what each
-file is, from its header: a BASIC program, or machine code and its
-address; a cartridge's kind and name, or why it can't be used. Type to
-narrow the list, or type a path and press Enter to go there. Arrows and
-Enter, or a double click, open a file; Backspace goes up; Esc closes.
-Recent files stay in the control panel, one click away, and files can be
-dropped on the window too.
-
-Programs (.prg) are loaded and RUN, or only loaded with Shift+Enter. They
-are written straight into the DRAM chips, as a freezer cartridge would do
-it, so loading works on a broken board too.
+Programs (.prg) are loaded and RUN, or only loaded with Shift+Enter; the
+browser says if one is BASIC or machine code, and its address. They are
+written straight into the DRAM chips, as a freezer cartridge would do it,
+so loading works on a broken board too.
 
 Cartridges (.crt) are plugged into the expansion port (the C64 is
-switched off and on, as you would do). The plain ones are supported, 8K, 16K and
-Ultimax, which is what the diagnostic cartridges are: Dead Test replaces
-the KERNAL and runs on boards with dead RAM or ROMs. A cartridge only
-drives the expansion port pins, everything else is the board: a dirty
-contact on the port is a fault on a CN6 pin.
+switched off and on, as you would do); the browser shows a cartridge's
+kind and name. The plain ones are supported, 8K, 16K and Ultimax, which
+is what the diagnostic cartridges are: Dead Test replaces the KERNAL and
+runs on boards with dead RAM or ROMs. A cartridge only drives the
+expansion port pins, everything else is the board: a dirty contact on
+the port is a fault on a CN6 pin.
 
 Dead Test gives the flash codes of its manual (one flash for U12, bit 7,
 up to eight for U21, bit 0). For the Diagnostic 586220 cartridge you can
@@ -151,12 +164,10 @@ shows where Commodore's manual says it should. Both cartridges are in
 Type on your keyboard as usual. ESC is RUN/STOP, PgUp is RESTORE, TAB is
 CTRL, and left ALT is C=.
 
-## The ZX Spectrum 48K
+## ZX Spectrum 48K
 
-The two buttons at the top of the control panel switch between the
-Commodore 64 and the ZX Spectrum 48K: the machine that runs is switched
-off, the other one on. `--machine zx48` starts with the Spectrum, and so
-does a snapshot or a ROM given on the command line.
+`--machine zx48` starts with the Spectrum, and so does a snapshot or a
+ROM given on the command line.
 
 The board is the Issue 3B. Its chips:
 
