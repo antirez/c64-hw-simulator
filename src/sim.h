@@ -7,6 +7,9 @@
  *
  *   SUPPLY  shorts to GND/+5V and the power rails themselves
  *   STRONG  normal chip outputs
+ *   RES     an output seen through a series resistor (the ZX Spectrum's
+ *           470 ohm between the CPU and the ULA buses): it drives the net
+ *           unless a chip output on this side drives it too
  *   PULL    pull-up resistors, weak NMOS outputs (CIA port lines)
  *   Z       nobody drives: the net is FLOATING and keeps its last level
  *           (the copper and the chip inputs behave like a small capacitor)
@@ -44,7 +47,7 @@
 #include "board_data.h"
 
 /* Drive strengths. */
-enum { S_Z = 0, S_PULL = 1, S_STRONG = 2, S_SUPPLY = 3 };
+enum { S_Z = 0, S_PULL = 1, S_RES = 2, S_STRONG = 3, S_SUPPLY = 4 };
 
 /* A drive packs strength and level in one byte: (strength << 1) | level. */
 typedef uint8_t drive_t;
@@ -102,7 +105,7 @@ enum { RAIL_NONE = 0, RAIL_GND, RAIL_VCC };
 
 typedef struct {
     /* Electrical state (meaningful on roots only). */
-    uint16_t count[8];  /* number of drives of each kind (index = drive_t value),
+    uint16_t count[10]; /* number of drives of each kind (index = drive_t value),
                            so resolving a change costs the same on any net */
     uint8_t level;      /* 0/1: driven level, or the charge when floating */
     uint8_t strength;   /* S_* of the winning drive, S_Z if floating */
@@ -143,6 +146,7 @@ struct part {
     int first_pin, npins;
     int pinmap[48];     /* pin number -> pin index (ICs and connectors) */
     bool removed;       /* pulled out of its socket */
+    bool no_supply;     /* a supply it needs is missing (set by the machine) */
     uint8_t tech;       /* TECH_* */
     uint8_t power;      /* PWR_*, computed from 'removed' and power pin faults */
     bool dead;          /* computed: the chip doesn't work (no eval, no core) */
@@ -185,6 +189,8 @@ struct sim {
     int queue[SIM_QUEUE_SIZE];
     unsigned qhead, qtail;
     uint64_t cycle;                 /* board clock, in CPU cycles (set by the board) */
+    uint64_t changes;               /* counts net changes: a board step in which
+                                       nothing changed can skip its commit */
     int clock_level;                /* PHI0 level of the current half cycle */
     uint64_t rng;                   /* noise generator state (deterministic) */
     uint64_t hold_time[2][2];       /* [ttl_loaded][level], see set_hold() */

@@ -32,5 +32,7 @@ Parts of this repository come from others and keep their own licenses:
   this license, see carts/LICENSE.
 - third_party/sokol: zlib license. third_party/nuklear: MIT or public
   domain, at your choice (see the end of nuklear.h).
-- src/board_data.c: generated from bwack's C64-250407-Replica-KiCad,
+- src/c64_board_data.c: generated from bwack's C64-250407-Replica-KiCad,
   licensed under the CERN OHL v1.2.
+- src/zx48_board_data.c: generated from liveboxandy's KiCad files of the
+  ZX Spectrum 48K Issue 3B (CC0 1.0), redrawn from PABB's gerbers.

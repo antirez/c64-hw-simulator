@@ -15,6 +15,7 @@ typedef struct {
      *   m  MOS input sampled only at clock edges / by the chip core
      *   O  output (or analog pin not simulated)
      *   B  bidirectional MOS pin (data bus), sampled by the core
+ *   X  bidirectional pin that re-evaluates the part when it changes
      *   P  power pin (if open, the chip is dead)
  *   S  analog switch terminal (4066): passes any drive through */
     const char *pins;
@@ -28,6 +29,7 @@ extern const part_type_t PT_82S100, PT_2364, PT_2332, PT_2114, PT_4164;
 extern const part_type_t PT_74LS08, PT_7406, PT_74LS139, PT_74LS257, PT_74LS258;
 extern const part_type_t PT_74LS373, PT_4066, PT_556, PT_74LS629;
 extern const part_type_t PT_74LS74, PT_74LS193, PT_MC4044;
+extern const part_type_t PT_4116, PT_4532, PT_23128, PT_74LS157, PT_74LS32, PT_74LS00, PT_LM1889;
 
 /* 82S100 PLA: its logic as a table of product terms (see parts.c). The
  * input word has bit PI_x set when that input pin is high; the outputs are
@@ -83,10 +85,27 @@ typedef struct {
 /* 74LS629: dot clock and color clock oscillator. */
 typedef struct { bool crystal_ok; } vco_state_t;
 
-/* Resistors and links: what each element does electrically. */
-enum { EL_PULLUP, EL_PULLDOWN, EL_LINK, EL_ANALOG };
+/* Resistors, links and diodes: what each element does electrically.
+ *   PULLUP/PULLDOWN  pin_a to a rail through the resistor
+ *   LINK             a wire (a zero ohm resistor, a ferrite bead)
+ *   SERIES           a series resistor between two logic nets: each side
+ *                    sees what drives the other, weakened (S_RES)
+ *   DIODE            pin_a anode, pin_b cathode: a low cathode pulls the
+ *                    anode low (the ZX Spectrum keyboard)
+ *   DELAY            an RC delay: pin_b (the capacitor) follows pin_a one
+ *                    bus step later
+ *   NPN              a transistor switch: a high base (pin_a) pulls the
+ *                    collector (pin_b) low
+ *   FOLLOWER         an emitter follower: a high base (pin_a) drives the
+ *                    emitter (pin_b) high
+ *   ANALOG           not simulated */
+enum { EL_PULLUP, EL_PULLDOWN, EL_LINK, EL_ANALOG, EL_SERIES, EL_DIODE, EL_DELAY, EL_NPN, EL_FOLLOWER };
 typedef struct { int pin_a, pin_b, type; } element_t;
-typedef struct { element_t el[16]; int nel; } resistor_state_t;
+typedef struct { element_t el[16]; int nel; uint8_t delayed[16]; } resistor_state_t;
 void resistor_eval(sim_t *s, part_t *p);
+void resistor_commit(sim_t *s, part_t *p);
+/* Make an element one of the active kinds above (sets pin flags, eval and
+ * commit of the part). */
+void element_set_type(sim_t *s, part_t *p, int index, int type);
 
 #endif

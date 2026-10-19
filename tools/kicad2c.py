@@ -68,6 +68,11 @@ BOARDS = {
 }
 
 
+# Active low signals on the Spectrum board are named with underscores:
+# '_M_REQ' is /MREQ, '_IO_RQULA' /IORQULA.
+UNDERSCORE_BAR = False
+
+
 def clean_net(name):
     """KiCad net names -> readable names: '/sheet/~{AEC}' -> '/AEC'."""
     name = re.sub(r'^/250407_sheet2/', '', name)
@@ -76,6 +81,8 @@ def clean_net(name):
     # ~{X} means "X with an overbar" (active low): render as /X
     name = re.sub(r'~\{([^}]*)\}', r'/\1', name)
     name = name.replace('\\', '')
+    if UNDERSCORE_BAR and name.startswith('_'):
+        name = '/' + name[1:].replace('_', '')
     return name
 
 
@@ -84,6 +91,8 @@ def main():
         print(__doc__, file=sys.stderr)
         sys.exit(1)
     board = sys.argv[2]
+    global UNDERSCORE_BAR
+    UNDERSCORE_BAR = board == 'zx48'
     pcb = parse(tokenize(open(sys.argv[1], encoding='utf-8').read()))
 
     # Net table (index 0 is the unconnected net in KiCad). KiCad 10 has no
@@ -99,6 +108,8 @@ def main():
         if len(net) > 2 or net[1].isdigit():    # (net 12 "name")
             return int(net[1])
         name = clean_net(net[1])                # (net "name")
+        if name.startswith('unconnected-('):    # a pad on its own: no net
+            return 0
         if name not in by_name:
             by_name[name] = len(nets) + len(by_name) + 1
             nets[by_name[name]] = name

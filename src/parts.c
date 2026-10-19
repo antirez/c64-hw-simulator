@@ -38,6 +38,7 @@ void part_set_type(sim_t *s, int part, const part_type_t *t) {
             case 'm': flags = PIN_IN; break;
             case 'O': flags = PIN_OUT; break;
             case 'B': flags = PIN_IN | PIN_OUT; break;
+            case 'X': flags = PIN_SENSE | PIN_IN | PIN_OUT; break;
             case 'P': flags = PIN_POWER; break;
             case 'S': flags = PIN_SENSE | PIN_SWITCH | PIN_IN | PIN_OUT; break;
             default: flags = 0; break;
@@ -259,27 +260,35 @@ static void dram_eval(sim_t *s, part_t *p) {
     pin_out(s, p, 14, st->out_en ? DRV_BIT(st->out_bit) : DRV_Z);
 }
 
-static void dram_commit(sim_t *s, part_t *p) {
+/* A DRAM cycle with 'bits' address lines. A 4532 is a 4164 sold with one
+ * good half: with 'bad_row7' the rows with A7 high (the half a TI 4532-3
+ * doesn't use) don't store anything and read back garbage. */
+static void dram_cycle(sim_t *s, part_t *p, int bits, bool bad_row7) {
     dram_state_t *st = p->state;
     int ras = pin_in(s, p, 4), cas = pin_in(s, p, 15);
     uint8_t out_en = st->out_en, out_bit = st->out_bit;
-    if (st->ras_prev && !ras) st->row = (uint8_t)part_read_bus(s, p, dram_addr_pins, 8);
+    if (st->ras_prev && !ras) st->row = (uint8_t)part_read_bus(s, p, dram_addr_pins, bits);
     if (st->cas_prev && !cas && !ras) {
-        st->col = (uint8_t)part_read_bus(s, p, dram_addr_pins, 8);
+        st->col = (uint8_t)part_read_bus(s, p, dram_addr_pins, bits);
         int cell = (st->row << 8) | st->col;
+        bool bad = bad_row7 && (st->row & 0x80);
         if (!pin_in(s, p, 3)) {          /* /WE low before /CAS: early write */
-            st->cells[cell] = (uint8_t)pin_in(s, p, 2);
+            if (!bad) st->cells[cell] = (uint8_t)pin_in(s, p, 2);
             st->out_en = 0;
         } else {                        /* read: Q drives until /CAS rises */
             st->out_en = 1;
-            st->out_bit = st->cells[cell];
+            st->out_bit = bad ? (uint8_t)(((unsigned)cell * 2654435761u) >> 31) : st->cells[cell];
         }
     }
-    if (cas || ras) st->out_en = 0;
+    /* Q is valid until /CAS rises (it outlives /RAS: the ZX Spectrum's
+     * ULA reads the attribute byte that way). */
+    if (cas) st->out_en = 0;
     st->ras_prev = (uint8_t)ras;
     st->cas_prev = (uint8_t)cas;
     if (st->out_en != out_en || st->out_bit != out_bit) sim_mark_dirty(s, (int)(p - s->parts));
 }
+
+static void dram_commit(sim_t *s, part_t *p) { dram_cycle(s, p, 8, false); }
 
 /* Power-on pattern used by c64-llm: 64 bytes of $00, then 64 of $FF. With
  * row = A0-A7 and column = A8-A15 the address of a cell is (col << 8) | row. */
@@ -465,14 +474,168 @@ const part_type_t PT_MC4044 = { "MC4044 PLL",
 
 /* A pull-up drives its net weakly high, unless it is open; a shorted pull-up
  * ties the net to the rail. Links are handled by the board (net merging). */
+/* What a series resistor passes from one side to the other: the drive on
+ * that side (its own drive excluded), one step weaker. Through two
+ * resistors a chip output is only as strong as a pull-up. */
+static drive_t through(sim_t *s, int pin) {
+    drive_t d = sim_drive_except(s, pin, pin);
+    int st = d >> 1;
+    if (st >= S_STRONG) return DRIVE(S_RES, d & 1);
+    if (st >= S_PULL) return DRIVE(S_PULL, d & 1);
+    return DRV_Z;
+}
+
 void resistor_eval(sim_t *s, part_t *p) {
     resistor_state_t *st = p->state;
     for (int i = 0; i < st->nel; i++) {
         element_t *e = &st->el[i];
-        if (e->type != EL_PULLUP && e->type != EL_PULLDOWN) continue;
-        int level = e->type == EL_PULLUP;
-        drive_t d = p->rfault == RF_OPEN ? DRV_Z :
-                    p->rfault == RF_SHORT ? DRIVE(S_SUPPLY, level) : DRIVE(S_PULL, level);
-        sim_drive(s, e->pin_a, d);
+        switch (e->type) {
+        case EL_PULLUP:
+        case EL_PULLDOWN: {
+            int level = e->type == EL_PULLUP;
+            drive_t d = p->rfault == RF_OPEN ? DRV_Z :
+                        p->rfault == RF_SHORT ? DRIVE(S_SUPPLY, level) : DRIVE(S_PULL, level);
+            sim_drive(s, e->pin_a, d);
+            break;
+        }
+        case EL_SERIES: {
+            /* Open: nothing passes. Shorted: a link (see board_rebuild).
+             * Both ends on one net (shorted around it): nothing to do. */
+            const pin_t *a = &s->pins[e->pin_a], *b = &s->pins[e->pin_b];
+            bool off = p->rfault != RF_OK || a->root < 0 || b->root < 0 || a->root == b->root ||
+                       a->fault == PF_OPEN || b->fault == PF_OPEN;
+            sim_drive(s, e->pin_b, off ? DRV_Z : through(s, e->pin_a));
+            sim_drive(s, e->pin_a, off ? DRV_Z : through(s, e->pin_b));
+            break;
+        }
+        case EL_DIODE: {
+            /* Conducts when the cathode is driven low: the anode follows,
+             * through the diode's drop, stronger than a pull-up. */
+            const pin_t *k = &s->pins[e->pin_b];
+            bool on = p->rfault == RF_OK && k->root >= 0 && k->fault != PF_OPEN &&
+                      s->nets[k->root].strength != S_Z && !s->nets[k->root].level;
+            if (p->rfault == RF_SHORT) on = k->root >= 0 && !s->nets[k->root].level;
+            sim_drive(s, e->pin_a, on ? DRIVE(S_RES, 0) : DRV_Z);
+            break;
+        }
+        case EL_DELAY:
+            sim_drive(s, e->pin_b, p->rfault == RF_OPEN ? DRV_Z : DRV_BIT(st->delayed[i]));
+            break;
+        case EL_NPN:
+        case EL_FOLLOWER: {
+            /* On while the base is driven high (a short from collector to
+             * emitter: always on, open: never). */
+            const pin_t *bp = &s->pins[e->pin_a];
+            bool on = p->rfault == RF_SHORT ||
+                      (p->rfault == RF_OK && bp->root >= 0 && bp->fault != PF_OPEN &&
+                       s->nets[bp->root].strength != S_Z && s->nets[bp->root].level);
+            sim_drive(s, e->pin_b, !on ? DRV_Z : e->type == EL_NPN ? DRV_LO : DRV_HI);
+            break;
+        }
+        default:
+            break;
+        }
     }
 }
+
+/* RC delays: at every bus step the capacitor side takes the level the
+ * driven side had (eval() then drives it). */
+void resistor_commit(sim_t *s, part_t *p) {
+    resistor_state_t *st = p->state;
+    for (int i = 0; i < st->nel; i++) {
+        if (st->el[i].type != EL_DELAY) continue;
+        uint8_t v = (uint8_t)sim_read(s, st->el[i].pin_a);
+        if (v != st->delayed[i]) { st->delayed[i] = v; sim_mark_dirty(s, (int)(p - s->parts)); }
+    }
+}
+
+void element_set_type(sim_t *s, part_t *p, int index, int type) {
+    resistor_state_t *st = p->state;
+    element_t *e = &st->el[index];
+    e->type = type;
+    pin_t *a = &s->pins[e->pin_a], *b = &s->pins[e->pin_b];
+    switch (type) {
+    case EL_SERIES:     /* re-evaluated when anything on either side changes */
+        a->flags = b->flags = PIN_SENSE | PIN_SWITCH | PIN_IN | PIN_OUT;
+        break;
+    case EL_DIODE:
+        a->flags = PIN_OUT;
+        b->flags = PIN_SENSE | PIN_IN;
+        break;
+    case EL_NPN:
+    case EL_FOLLOWER:
+        a->flags = PIN_SENSE | PIN_IN;
+        b->flags = PIN_OUT;
+        break;
+    case EL_DELAY:
+        a->flags = PIN_IN;
+        b->flags = PIN_OUT;
+        p->commit = resistor_commit;
+        break;
+    }
+    p->eval = resistor_eval;
+}
+
+/* ------------------------------------------------------------------------ */
+/* ZX Spectrum 48K: memories and glue logic                                  */
+/* ------------------------------------------------------------------------ */
+
+/* 4116 dynamic RAM 16K x 1 (the lower 16K, IC6-IC13): a 4164 with seven
+ * address lines and three supplies (+12V, +5V, -5V). */
+static void dram4116_commit(sim_t *s, part_t *p) { dram_cycle(s, p, 7, false); }
+const part_type_t PT_4116 = { "4116",
+    "VBB:P D:m /WE:m /RAS:m A0:m A2:m A1:m VDD:P VCC:P A5:m A4:m A3:m A6:m Q:O /CAS:m VSS:P",
+    dram_eval, dram4116_commit, dram_reset, sizeof(dram_state_t), TECH_NMOS };
+
+/* 4532 (TI): a 4164 with one good half, the rows with A7 low (the upper
+ * 32K, IC15-IC22; the board's links put A7 low in the row address). */
+static void dram4532_commit(sim_t *s, part_t *p) { dram_cycle(s, p, 8, true); }
+const part_type_t PT_4532 = { "4532",
+    "NC:O D:m /WE:m /RAS:m A0:m A2:m A1:m VCC:P A7:m A5:m A4:m A3:m A6:m Q:O /CAS:m GND:P",
+    dram_eval, dram4532_commit, dram_reset, sizeof(dram_state_t), TECH_NMOS };
+
+/* 23128 mask ROM 16K x 8 (IC5): the data comes out while /CE, /OE and OE1
+ * (pin 27, used as a second chip select) are all low. */
+static const int rom23128_addr_pins[14] = { 10, 9, 8, 7, 6, 5, 4, 3, 25, 24, 21, 23, 2, 26 };
+static const int rom23128_data_pins[8] = { 11, 12, 13, 15, 16, 17, 18, 19 };
+static void rom23128_eval(sim_t *s, part_t *p) {
+    rom_state_t *st = p->state;
+    bool selected = !pin_in(s, p, 20) && !pin_in(s, p, 22) && !pin_in(s, p, 27);
+    unsigned addr = selected ? part_read_bus(s, p, rom23128_addr_pins, 14) : 0;
+    part_drive_bus_cached(s, p, rom23128_data_pins, 8, st->data ? st->data[addr] : 0xFF, selected, &st->out_cache);
+}
+const part_type_t PT_23128 = { "23128 ROM",
+    "NC:O A12:M A7:M A6:M A5:M A4:M A3:M A2:M A1:M A0:M D0:O D1:O D2:O GND:P D3:O D4:O D5:O D6:O "
+    "D7:O /CE:M A10:M /OE:M A11:M A9:M A8:M A13:M OE1:M VCC:P", rom23128_eval, 0, 0, sizeof(rom_state_t),
+    TECH_NMOS };
+
+/* 74LS157: quad 2-to-1 multiplexer. S low selects A, high selects B. With
+ * /G high the outputs are low (not off, unlike the 74LS257). */
+static void ls157_eval(sim_t *s, part_t *p) {
+    static const int sec[4][3] = { {2, 3, 4}, {5, 6, 7}, {11, 10, 9}, {14, 13, 12} };
+    bool enabled = !pin_in(s, p, 15);
+    int sel = pin_in(s, p, 1);
+    for (int i = 0; i < 4; i++)
+        pin_out(s, p, sec[i][2], DRV_BIT(enabled && pin_in(s, p, sel ? sec[i][1] : sec[i][0])));
+}
+const part_type_t PT_74LS157 = { "74LS157", MUX_PINS, ls157_eval, 0, 0, 0, TECH_TTL };
+
+/* 74LS32: quad 2-input OR. 74LS00: quad 2-input NAND. */
+static const int quad_gates[4][3] = { {1, 2, 3}, {4, 5, 6}, {9, 10, 8}, {12, 13, 11} };
+static void ls32_eval(sim_t *s, part_t *p) {
+    for (int i = 0; i < 4; i++)
+        pin_out(s, p, quad_gates[i][2], DRV_BIT(pin_in(s, p, quad_gates[i][0]) || pin_in(s, p, quad_gates[i][1])));
+}
+static void ls00_eval(sim_t *s, part_t *p) {
+    for (int i = 0; i < 4; i++)
+        pin_out(s, p, quad_gates[i][2], DRV_BIT(!(pin_in(s, p, quad_gates[i][0]) && pin_in(s, p, quad_gates[i][1]))));
+}
+const part_type_t PT_74LS32 = { "74LS32",
+    "1A:T 1B:T 1Y:O 2A:T 2B:T 2Y:O GND:P 3Y:O 3A:T 3B:T 4Y:O 4A:T 4B:T VCC:P", ls32_eval, 0, 0, 0, TECH_TTL };
+const part_type_t PT_74LS00 = { "74LS00",
+    "1A:T 1B:T 1Y:O 2A:T 2B:T 2Y:O GND:P 3Y:O 3A:T 3B:T 4Y:O 4A:T 4B:T VCC:P", ls00_eval, 0, 0, 0, TECH_TTL };
+
+/* LM1889 video modulator (IC14): analog, its pins are only named. */
+const part_type_t PT_LM1889 = { "LM1889",
+    "CHROMA_LEAD:O R-Y_IN:O CHROMA_BIAS:O B-Y_IN:O GND:P TANK_B1:O TANK_B2:O TANK_A1:O TANK_A2:O "
+    "OUT_B:O OUT_A:O VIDEO_IN:O SUBCARRIER:O VCC:P VCC:P VCC:P OSC_OUT:O CHROMA_LAG:O", 0, 0, 0, 0, TECH_NMOS };

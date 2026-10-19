@@ -16,6 +16,7 @@ static int *join_a, *join_b, njoin, join_cap;
 
 void sim_init(sim_t *s, const board_data_t *bd, const sim_desc_t *desc) {
     memset(s, 0, sizeof(*s));
+    njoin = 0;      /* the joins of a board simulated before this one */
     s->bd = bd;
     s->time_scale = desc->cycles_per_us;
     s->npins = bd->npads;
@@ -413,6 +414,7 @@ static void resolve(sim_t *s, int root, int cause_part) {
     }
     n->level = level;
     n->strength = st;
+    s->changes++;
     /* Keep the dense copies used by sim_read() and sim_read_group(). */
     int floating = st == S_Z;
     s->nread[root] = (uint8_t)(level | (floating << 1));
@@ -560,7 +562,7 @@ void sim_update_part_power(sim_t *s, int part) {
         if (name && (strstr(name, "GND") || !strcmp(name, "VSS"))) no_gnd = true;
         else no_vcc = true;
     }
-    if (p->removed || (no_vcc && no_gnd)) p->power = PWR_OFF;
+    if (p->removed || p->no_supply || (no_vcc && no_gnd)) p->power = PWR_OFF;
     else if (no_vcc) p->power = PWR_NO_VCC;
     else if (no_gnd) p->power = PWR_NO_GND;
     else p->power = PWR_OK;

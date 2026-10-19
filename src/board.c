@@ -166,7 +166,8 @@ void board_rebuild(board_t *b) {
         resistor_state_t *st = p->state;
         for (int k = 0; k < st->nel; k++) {
             element_t *e = &st->el[k];
-            if (e->type != EL_LINK) continue;
+            /* A shorted series resistor is a wire. */
+            if (e->type != EL_LINK && !(e->type == EL_SERIES && p->rfault == RF_SHORT)) continue;
             if (s->pins[e->pin_a].fault == PF_OPEN || s->pins[e->pin_b].fault == PF_OPEN) continue;
             sim_join(s, s->pins[e->pin_a].net, s->pins[e->pin_b].net);
         }

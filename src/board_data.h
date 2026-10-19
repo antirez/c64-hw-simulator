@@ -27,5 +27,6 @@ typedef struct {
 } board_data_t;
 
 extern const board_data_t bd_c64;   /* c64_board_data.c */
+extern const board_data_t bd_zx48;  /* zx48_board_data.c */
 
 #endif

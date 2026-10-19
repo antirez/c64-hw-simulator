@@ -23,7 +23,7 @@
 /* What is inside the logic chips                                            */
 /* ------------------------------------------------------------------------ */
 
-enum { G_INV, G_AND, G_MUX, G_LATCH, G_SWITCH, G_BOX };
+enum { G_INV, G_AND, G_OR, G_MUX, G_LATCH, G_SWITCH, G_BOX };
 
 typedef struct {
     int kind;
@@ -43,6 +43,7 @@ typedef struct {
 
 #define INV(a, o)       { G_INV, {a, 0}, o, 0, {0}, NULL }
 #define AND(a, b, o)    { G_AND, {a, b}, o, 0, {0}, NULL }
+#define OR(a, b, o)     { G_OR, {a, b}, o, 0, {0}, NULL }
 #define MUX(a, b, o)    { G_MUX, {a, b}, o, 0, {0}, NULL }
 #define LATCH(d, q)     { G_LATCH, {d, 0}, q, 0, {0}, NULL }
 #define SWITCH(a, b, c) { G_SWITCH, {a, b}, 0, c, {0}, NULL }
@@ -55,6 +56,11 @@ static const diagram_t diagrams[] = {
       { INV(1, 2), INV(3, 4), INV(5, 6), INV(9, 8), INV(11, 10), INV(13, 12) } },
     { "74LS08", false, false, {0, 0}, 4,
       { AND(1, 2, 3), AND(4, 5, 6), AND(9, 10, 8), AND(12, 13, 11) } },
+    { "74LS00", false, true, {0, 0}, 4,
+      { AND(1, 2, 3), AND(4, 5, 6), AND(9, 10, 8), AND(12, 13, 11) } },
+    { "74LS32", false, false, {0, 0}, 4,
+      { OR(1, 2, 3), OR(4, 5, 6), OR(9, 10, 8), OR(12, 13, 11) } },
+    { "74LS157", false, false, {1, 15}, 4, MUX4 },      /* S, /G */
     { "74LS257", false, false, {1, 15}, 4, MUX4 },      /* S, /G */
     { "74LS258", false, true, {1, 15}, 4, MUX4 },
     { "74LS373", false, false, {11, 1}, 8,              /* LE, /OE */
@@ -205,7 +211,15 @@ static void draw_inv(dc_t *d, const diagram_t *dg, const gate_t *g) {
     out_wire(d, cx + dir * r, y, dir, g->out);
 }
 
-static void draw_and(dc_t *d, const gate_t *g) {
+/* A NAND (inverting AND) ends with a bubble, filled with what it drives. */
+static void out_bubble(dc_t *d, float tip, float yc, int dir, int num) {
+    float rb = d->u * 0.1f, cx = tip + dir * rb;
+    nk_fill_circle(d->cv, nk_rect(cx - rb, yc - rb, 2 * rb, 2 * rb), dcol(d, num));
+    nk_stroke_circle(d->cv, nk_rect(cx - rb, yc - rb, 2 * rb, 2 * rb), 1, d->ink);
+    out_wire(d, cx + dir * rb, yc, dir, num);
+}
+
+static void draw_and(dc_t *d, const diagram_t *dg, const gate_t *g) {
     int dir = -d->pos[g->in[0]].side;
     float u = d->u, ex = d->pos[g->in[0]].x;
     float yc = (d->pos[g->in[0]].y + d->pos[g->in[1]].y) / 2, h = u * 0.9f, w = u * 0.75f;
@@ -217,6 +231,39 @@ static void draw_and(dc_t *d, const gate_t *g) {
     pts[n++] = x0; pts[n++] = yc + h / 2;
     pts[n++] = x0; pts[n++] = yc - h / 2;
     n += 2 * arc_points(pts + n, x0 + dir * flat, yc, h / 2, -NK_PI / 2, -NK_PI / 2 + dir * NK_PI, 24);
+    nk_stroke_polygon(d->cv, pts, n / 2, d->t, d->ink);
+    float tip = x0 + dir * w;
+    if (dg->inv) { out_bubble(d, tip, yc, dir, g->out); return; }
+    out_wire(d, tip, yc, dir, g->out);
+    out_mark(d, tip, yc, g->out);
+}
+
+/* OR: a curved back, and two curves meeting in a point. */
+static void draw_or(dc_t *d, const gate_t *g) {
+    int dir = -d->pos[g->in[0]].side;
+    float u = d->u, ex = d->pos[g->in[0]].x;
+    float yc = (d->pos[g->in[0]].y + d->pos[g->in[1]].y) / 2, h = u * 0.9f, w = u * 0.8f;
+    float x0 = ex + dir * u * 0.35f, back = w * 0.22f;
+    in_wires2(d, g, x0 + dir * back * 0.7f, yc - h / 4, yc + h / 4);
+    float pts[2 * 64];
+    int n = 0;
+    /* front: from the top corner to the tip and back to the bottom */
+    for (int i = 0; i <= 16; i++) {
+        float t = (float)i / 16;
+        pts[n++] = x0 + dir * w * sinf(t * NK_PI / 2);
+        pts[n++] = yc - h / 2 + (h / 2) * (1 - cosf(t * NK_PI / 2));
+    }
+    for (int i = 1; i <= 16; i++) {
+        float t = (float)i / 16;
+        pts[n++] = x0 + dir * w * cosf(t * NK_PI / 2);
+        pts[n++] = yc + (h / 2) * sinf(t * NK_PI / 2);
+    }
+    /* back: a shallow curve inward */
+    for (int i = 1; i < 16; i++) {
+        float t = (float)i / 16;
+        pts[n++] = x0 + dir * back * sinf(t * NK_PI);
+        pts[n++] = yc + h / 2 - h * t;
+    }
     nk_stroke_polygon(d->cv, pts, n / 2, d->t, d->ink);
     float tip = x0 + dir * w;
     out_wire(d, tip, yc, dir, g->out);
@@ -385,7 +432,8 @@ bool chip_diagram(struct nk_command_buffer *cv, struct nk_context *ctx, board_t 
         if (!ok) continue;
         switch (g->kind) {
         case G_INV: draw_inv(&d, dg, g); break;
-        case G_AND: draw_and(&d, g); break;
+        case G_AND: draw_and(&d, dg, g); break;
+        case G_OR: draw_or(&d, g); break;
         case G_MUX: draw_mux(&d, dg, g); break;
         case G_LATCH: draw_latch(&d, dg, g); break;
         case G_SWITCH: draw_switch(&d, g); break;
