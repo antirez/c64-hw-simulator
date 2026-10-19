@@ -1,7 +1,7 @@
 /* main.c - c64-hw-sim entry point.
  *
  *   c64-hw-sim [program.prg | cartridge.crt] [--harness] [--fault SPEC]...
- *       [--machine c64]
+ *       [--machine c64|zx48]
  *       Graphical simulator. The optional .prg is loaded and RUN after boot;
  *       a .crt cartridge is plugged into the expansion port before power on,
  *       --harness plugs the 586220 diagnostic harness.
@@ -40,6 +40,7 @@
 #include "sokol_headers.h"
 #include "board.h"
 #include "c64.h"
+#include "zx48.h"
 #include "png.h"
 #include "ui.h"
 #include <stdio.h>
@@ -79,7 +80,7 @@ static struct {
 static board_t *board;
 
 /* The machines, for --machine. */
-static const machine_t *const machines[] = { &machine_c64 };
+static const machine_t *const machines[] = { &machine_c64, &machine_zx48 };
 
 static void apply_faults(void) {
     for (int i = 0; i < args.nfaults; i++)
@@ -92,7 +93,7 @@ static void insert_cart(void) {
     char msg[256];
     if (args.harness) board_set_harness(board, true);
     if (!args.crt) return;
-    if (!board_insert_cart(board, args.crt, msg, sizeof(msg))) fprintf(stderr, "%s\n", msg);
+    if (!board_load(board, args.crt, false, msg, sizeof(msg))) fprintf(stderr, "%s\n", msg);
     else printf("%s\n", msg);
 }
 
@@ -136,7 +137,7 @@ static int run_headless(void) {
     if (!args.fault_after) apply_faults();
     clock_t t0 = clock();
     const char *type = getenv("C64HW_TYPE");     /* text to type after boot */
-    int typed = 0;
+    int typed = 0, next_type = 0;
     const machine_t *m = board->m;
     int ready = (int)(m->ready_cycles / (uint64_t)m->cycles_per_frame);
     for (int f = 0; f < args.headless_frames; f++) {
@@ -155,8 +156,12 @@ static int run_headless(void) {
             board_load(board, args.prg, true, msg, sizeof(msg));
             printf("%s\n", msg);
         }
-        if (type && f >= ready + 10 && f % 4 == 0 && type[typed]) {
+        /* A key every 4 frames; the same key again after 12, as the
+         * Spectrum's ROM takes a key pressed again within 5 frames of its
+         * release for the same key held down. */
+        if (type && f >= ready + 10 && f >= next_type && f % 4 == 0 && type[typed]) {
             int c = type[typed++];
+            next_type = f + (type[typed] == c ? 12 : 4);
             if (c == '\n') c = m->host_key(SAPP_KEYCODE_ENTER);
             else if (c >= 'a' && c <= 'z') c = m->host_char(c);
             board_key_down(board, c);
@@ -183,7 +188,8 @@ static int run_headless(void) {
                 const pin_t *pp = &s->pins[n->pins[k]];
                 const char *pname = sim_pin_name(s, n->pins[k]);
                 if (pp->eff) printf(" %s.%d(%s)=%s%d", s->parts[pp->part].ref, pp->number, pname ? pname : "",
-                                    (pp->eff >> 1) == S_SUPPLY ? "supply" : (pp->eff >> 1) == S_STRONG ? "" : "weak",
+                                    (pp->eff >> 1) == S_SUPPLY ? "supply" : (pp->eff >> 1) == S_STRONG ? "" :
+                                    (pp->eff >> 1) == S_RES ? "res" : "weak",
                                     pp->eff & 1);
             }
             printf("\n");
@@ -343,9 +349,14 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--fault") && i + 1 < argc && args.nfaults < 64) args.faults[args.nfaults++] = argv[++i];
         else if (argv[i][0] == '-') { fprintf(stderr, "unknown option %s\n", argv[i]); return 1; }
         else {
+            /* Cartridges go in before power on, the rest is loaded once the
+             * machine is ready. Spectrum files pick the Spectrum. */
             size_t n = strlen(argv[i]);
-            if (n > 4 && !strcasecmp(argv[i] + n - 4, ".crt")) args.crt = argv[i];
+            const char *ext = n > 4 ? argv[i] + n - 4 : "";
+            if (!strcasecmp(ext, ".crt") || !strcasecmp(ext, ".rom")) args.crt = argv[i];
             else args.prg = argv[i];
+            if (!args.machine && (!strcasecmp(ext, ".rom") || !strcasecmp(ext, ".sna") || !strcasecmp(ext, ".z80")))
+                args.machine = &machine_zx48;
         }
     }
     board = board_create(args.machine ? args.machine : &machine_c64);

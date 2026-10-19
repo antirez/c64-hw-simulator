@@ -147,7 +147,7 @@ static void plug(board_t *b, struct cart *c) {
     C64(b)->cart = c;
 }
 
-bool board_insert_cart(board_t *b, const char *path, char *msg, int msglen) {
+bool c64_insert_cart(board_t *b, const char *path, char *msg, int msglen) {
     if (!board_is_c64(b)) { snprintf(msg, msglen, "cartridges go in the C64"); return false; }
     struct cart *c = crt_load(path, msg, msglen);
     if (!c) return false;
@@ -157,7 +157,7 @@ bool board_insert_cart(board_t *b, const char *path, char *msg, int msglen) {
     c->pin_exrom = cn6_pin(b, "9");
     for (int i = 0; i < 13; i++) c->pin_a[i] = cn6_pin(b, pad_a[i]);
     for (int i = 0; i < 8; i++) c->pin_d[i] = cn6_pin(b, pad_d[i]);
-    board_remove_cart(b);
+    c64_remove_cart(b);
     plug(b, c);
     /* Cartridges go in with the power off: switch the C64 on again. */
     board_rebuild(b);
@@ -168,7 +168,7 @@ bool board_insert_cart(board_t *b, const char *path, char *msg, int msglen) {
     return true;
 }
 
-void board_remove_cart(board_t *b) {
+void c64_remove_cart(board_t *b) {
     if (!board_is_c64(b)) return;
     struct cart *c = C64(b)->cart;
     if (!c) return;
@@ -178,7 +178,7 @@ void board_remove_cart(board_t *b) {
     board_power_on(b);
 }
 
-const char *board_cart_name(board_t *b) {
+const char *c64_cart_name(board_t *b) {
     if (!board_is_c64(b) || !C64(b)->cart) return NULL;
     return ((struct cart *)C64(b)->cart)->name;
 }

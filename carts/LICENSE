@@ -1,5 +1,7 @@
 The cartridge images in this directory are NOT covered by the license of
-c64-hw-sim. They are Commodore's diagnostic software for the C64:
+c64-hw-sim.
+
+The C64 cartridges are Commodore's diagnostic software for the C64:
 
   deadtest-781220.crt   C-64 Dead Test, revision 781220
   diag-586220.crt       C-64 Diagnostic, revision 586220
@@ -21,3 +23,12 @@ for teaching how the machine works, by running them on a simulated board
 
 If you own the copyright and want them removed, please write to
 antirez@gmail.com and they will be removed.
+
+---
+
+zx-diagnostics-v0.37.rom is the ZX Spectrum diagnostic ROM by Brendan
+Alford and contributors (testrom.bin of release v0.37), free software
+under the GNU Lesser General Public License version 3: see
+zx-diagnostics.LICENSE. Its source code is at
+https://github.com/brendanalford/zx-diagnostics (tag v0.37). It runs from
+the edge connector, as on a diagnostic board that holds /ROMCS high.

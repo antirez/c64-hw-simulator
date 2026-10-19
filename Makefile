@@ -7,7 +7,7 @@ CC      ?= cc
 OPT     ?= -O3 -flto
 CFLAGS  := $(OPT) -g -Wall -Wextra -Wno-unused-parameter -Isrc -Ichips -Ithird_party -DSOKOL_GLCORE
 
-SIM_SRC = src/sim.c src/parts.c src/board.c src/c64.c src/cart.c src/harness.c src/c64_board_data.c src/png.c src/chips_impl.c
+SIM_SRC = src/sim.c src/parts.c src/board.c src/c64.c src/cart.c src/harness.c src/c64_board_data.c src/zx48.c src/ula.c src/zx48_board_data.c src/png.c src/chips_impl.c
 APP_SRC = src/main.c src/ui.c src/inspect.c src/browser.c
 
 UNAME := $(shell uname -s)

@@ -319,6 +319,9 @@ bool board_load(board_t *b, const char *path, bool run, char *msg, int msglen) {
     return b->m->load(b, path, run, msg, msglen);
 }
 
+const char *board_cart_name(board_t *b) { return b->m->cart_name ? b->m->cart_name(b) : NULL; }
+void board_remove_cart(board_t *b) { if (b->m->remove_cart) b->m->remove_cart(b); }
+
 /* ------------------------------------------------------------------------ */
 /* Faults                                                                    */
 /* ------------------------------------------------------------------------ */

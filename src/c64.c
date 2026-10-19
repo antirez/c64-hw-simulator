@@ -845,10 +845,53 @@ static void c64_monitor(board_t *b, uint32_t *out) {
     }
 }
 
+/* What a file is, from its first bytes: a program (BASIC or machine code
+ * and its address) or a cartridge (its kind and name, or why it can't be
+ * plugged). */
+static const file_kind_t c64_prg = { "program", "Load and RUN", true, -1 };
+static const file_kind_t c64_crt = { "cartridge", "Plug the cartridge", false, ROLE_ROM };
+
+static const file_kind_t *c64_file_kind(const char *path, char *info, int len, bool *bad) {
+    size_t pl = strlen(path);
+    bool prg = pl > 4 && !strcasecmp(path + pl - 4, ".prg"), crt = pl > 4 && !strcasecmp(path + pl - 4, ".crt");
+    if (!prg && !crt) return NULL;
+    FILE *f = fopen(path, "rb");
+    uint8_t h[64] = {0};
+    size_t n = f ? fread(h, 1, sizeof(h), f) : 0;
+    if (f) fclose(f);
+    *bad = false;
+    if (prg) {
+        unsigned addr = n >= 2 ? h[0] | h[1] << 8 : 0;
+        if (n < 3) snprintf(info, len, "too short for a program");
+        else if (addr == 0x0801) snprintf(info, len, "BASIC program");
+        else snprintf(info, len, "machine code at $%04X", addr);
+        return &c64_prg;
+    }
+    if (n < 64 || memcmp(h, "C64 CARTRIDGE   ", 16)) {
+        snprintf(info, len, "not a cartridge file");
+        *bad = true;
+        return &c64_crt;
+    }
+    char name[33];
+    memcpy(name, h + 0x20, 32);
+    name[32] = 0;
+    for (int i = (int)strlen(name) - 1; i >= 0 && name[i] == ' '; i--) name[i] = 0;
+    unsigned type = (unsigned)h[0x16] << 8 | h[0x17];
+    bool exrom = h[0x18] == 0, game = h[0x19] == 0;       /* lines held low */
+    if (type != 0) {
+        snprintf(info, len, "type %u (bank switching): not supported", type);
+        *bad = true;
+        return &c64_crt;
+    }
+    const char *kind = game && !exrom ? "Ultimax" : game ? "16K" : exrom ? "8K" : "no ROM lines";
+    snprintf(info, len, "%s cartridge%s%s", kind, name[0] ? ": " : "", name);
+    return &c64_crt;
+}
+
 /* A .prg goes into RAM; a .crt cartridge into the expansion port. */
 static bool c64_load(board_t *b, const char *path, bool run, char *msg, int msglen) {
     size_t n = strlen(path);
-    if (n > 4 && !strcasecmp(path + n - 4, ".crt")) return board_insert_cart(b, path, msg, msglen);
+    if (n > 4 && !strcasecmp(path + n - 4, ".crt")) return c64_insert_cart(b, path, msg, msglen);
     return c64_load_prg(b, path, run, msg, msglen);
 }
 
@@ -967,6 +1010,7 @@ const machine_t machine_c64 = {
     .link_resistors = "RP1 RP2 R42",
     .crystals = "Y1",
     .keys_help = "Keys: ESC=RUN/STOP  PgUp=RESTORE  TAB=CTRL  ALT=C=",
+    .reset_help = "Hold to press RESET: shorts /RESET to GND (user port pin 3 to pin 1)",
     .create = c64_create,
     .power_on = c64_power_on,
     .run = c64_run,
@@ -977,6 +1021,11 @@ const machine_t machine_c64 = {
     .host_key = c64_host_key,
     .host_char = c64_host_char,
     .monitor = c64_monitor,
+    .files_title = "Open a program (.prg) or a cartridge (.crt)",
+    .cart_slot = "CN6",
+    .cart_name = c64_cart_name,
+    .remove_cart = c64_remove_cart,
+    .file_kind = c64_file_kind,
     .load = c64_load,
     .cpu_status = c64_cpu_status,
     .cpu_regs = c64_cpu_regs,

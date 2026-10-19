@@ -27,12 +27,20 @@ Parts of this repository come from others and keep their own licenses:
 - chips/c64-roms.h: images of the Commodore 64 ROMs (BASIC, KERNAL,
   character generator). They belong to their copyright holders and are
   not covered by this license.
+- chips/zx48-rom.h: the ZX Spectrum 48K ROM, copyright Amstrad plc.
+  Amstrad have kindly given their permission for the redistribution of
+  their copyrighted material but retain that copyright.
 - carts/: Commodore's diagnostic cartridges (Dead Test, Diagnostic
-  586220). They belong to their copyright holders and are not covered by
-  this license, see carts/LICENSE.
+  586220), which belong to their copyright holders, and the ZX Spectrum
+  diagnostic ROM (LGPL 3). They are not covered by this license, see
+  carts/LICENSE.
 - third_party/sokol: zlib license. third_party/nuklear: MIT or public
   domain, at your choice (see the end of nuklear.h).
 - src/c64_board_data.c: generated from bwack's C64-250407-Replica-KiCad,
   licensed under the CERN OHL v1.2.
 - src/zx48_board_data.c: generated from liveboxandy's KiCad files of the
   ZX Spectrum 48K Issue 3B (CC0 1.0), redrawn from PABB's gerbers.
+- src/ula.c is our own model of the Ferranti ULA, checked against the
+  gate level netlist of the 6C001 recovered from the die by the
+  emu-russia/ula project (CC0), which is not included here: see
+  tools/ulacheck.c.

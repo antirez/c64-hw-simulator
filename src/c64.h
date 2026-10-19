@@ -100,9 +100,9 @@ bool c64_load_prg(board_t *b, const char *path, bool run, char *err, int errlen)
 /* Plug a .CRT cartridge into the expansion port, or pull it out. Both
  * switch the C64 off and on again, as you would. 'msg' tells what was
  * loaded or why not. The name is NULL without a cartridge (or a C64). */
-bool board_insert_cart(board_t *b, const char *path, char *msg, int msglen);
-void board_remove_cart(board_t *b);
-const char *board_cart_name(board_t *b);
+bool c64_insert_cart(board_t *b, const char *path, char *msg, int msglen);
+void c64_remove_cart(board_t *b);
+const char *c64_cart_name(board_t *b);
 /* Plug or unplug the 586220 diagnostic harness (harness.c); the C64 is
  * switched off and on. board_harness() is false on other machines. */
 void board_set_harness(board_t *b, bool plugged);

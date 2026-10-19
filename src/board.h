@@ -38,6 +38,14 @@ typedef struct {
  * ('_' is shown as a space). */
 typedef struct { const char *ref, *name, *pins; } conn_def_t;
 
+/* A kind of file a machine takes (see machine_t.file_kind). */
+typedef struct {
+    const char *type;           /* "program", "cartridge", "snapshot" */
+    const char *action;         /* the button that opens it: "Load and RUN" */
+    bool norun;                 /* it can also be loaded without running it */
+    int role;                   /* ROLE_* to color it, -1 for plain text */
+} file_kind_t;
+
 typedef struct machine {
     const char *id;             /* "c64" (--machine) */
     const char *name;           /* "Commodore 64" */
@@ -55,6 +63,7 @@ typedef struct machine {
     const char *link_resistors; /* resistors that are just wires: "RP1 RP2" */
     const char *crystals;       /* other parts that can be broken: "Y1" */
     const char *keys_help;      /* how the host keyboard maps to the machine's */
+    const char *reset_help;     /* where the RESET button is */
     /* Set up the cores, models and wiring (board_create() did the rest). */
     void (*create)(board_t *b);
     void (*destroy)(board_t *b);
@@ -71,6 +80,16 @@ typedef struct machine {
     int (*host_key)(int keycode);
     int (*host_char)(int c);
     void (*monitor)(board_t *b, uint32_t *out);
+    /* Files: the title of the browser, what a file is for this machine
+     * (NULL if it isn't one it takes), with a line about it, and whether
+     * it can't be used (bad). */
+    const char *files_title;
+    const file_kind_t *(*file_kind)(const char *path, char *info, int len, bool *bad);
+    /* Cartridges: the connector they plug into, the name of the one
+     * plugged (NULL if none), pulling it out (the machine restarts). */
+    const char *cart_slot;
+    const char *(*cart_name)(board_t *b);
+    void (*remove_cart)(board_t *b);
     /* Load a file (program, cartridge...): false and a message if not. */
     bool (*load)(board_t *b, const char *path, bool run, char *msg, int msglen);
     const char *(*cpu_status)(board_t *b);              /* "running", "in reset"... */
@@ -78,7 +97,7 @@ typedef struct machine {
     void (*print_text)(board_t *b);                     /* --text: read the screen */
 } machine_t;
 
-extern const machine_t machine_c64;
+extern const machine_t machine_c64, machine_zx48;
 
 struct board {
     sim_t sim;
@@ -154,6 +173,8 @@ void board_key_down(board_t *b, int key);
 void board_key_up(board_t *b, int key);
 void board_frame_update(board_t *b, uint32_t us);
 bool board_load(board_t *b, const char *path, bool run, char *msg, int msglen);
+const char *board_cart_name(board_t *b);
+void board_remove_cart(board_t *b);
 void board_monitor(board_t *b, uint32_t *out);
 
 /* Logic probe: what a net did since the last board_stats_reset(). */

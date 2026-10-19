@@ -15,6 +15,7 @@
 #include "inspect.h"
 #include "browser.h"
 #include "png.h"
+#include <ctype.h>
 #include <math.h>
 #include <pthread.h>
 #include <sched.h>
@@ -74,12 +75,15 @@ static struct {
     bool trigger;
     /* What the last program or cartridge load said. */
     char status[512];
+    /* A machine chosen in the controls, put on the bench after the frame. */
+    const machine_t *switch_to;
 } U;
 
 /* ------------------------------------------------------------------------ */
 /* Helpers                                                                   */
 /* ------------------------------------------------------------------------ */
 
+static void switch_machine(const machine_t *m);
 static sim_t *S(void) { return &U.b->sim; }
 static const board_data_t *BD(void) { return U.b->sim.bd; }
 static const machine_t *M(void) { return U.b->m; }
@@ -321,7 +325,7 @@ static void draw_part(struct nk_command_buffer *cv, struct nk_context *ctx, stru
         break;
     case PART_CONNECTOR: {
         /* A cartridge in the expansion port: a board under the pins. */
-        const char *cart = board_is_c64(U.b) && i == C64(U.b)->p_cn6 ? board_cart_name(U.b) : NULL;
+        const char *cart = M()->cart_slot && !strcmp(p->ref, M()->cart_slot) ? board_cart_name(U.b) : NULL;
         /* A dongle of the 586220 harness: an outline around the connector. */
         static const char *const harness_cn[] = { "CN1", "CN2", "CN3", "CN4", "CN8", "CN9" };
         bool dongle = false;
@@ -521,7 +525,9 @@ static void fault_menu(struct nk_context *ctx) {
             } else {
                 int f = p->rfault;
                 if (option(ctx, "Working", f == RF_OK)) { board_set_rfault(U.b, part, RF_OK); U.menu_open = false; }
-                if (option(ctx, p->kind == PART_OTHER ? "Broken (no oscillation)" : "Open", f == RF_OPEN)) {
+                bool crystal = p->ref[0] == 'X' || p->ref[0] == 'Y';
+                if (option(ctx, p->kind != PART_OTHER ? "Open" : crystal ? "Broken (no oscillation)" : "Broken",
+                           f == RF_OPEN)) {
                     board_set_rfault(U.b, part, RF_OPEN); U.menu_open = false;
                 }
                 if (pullup && option(ctx, "Shorted", f == RF_SHORT)) { board_set_rfault(U.b, part, RF_SHORT); U.menu_open = false; }
@@ -603,8 +609,15 @@ static void monitor_window(struct nk_context *ctx, float x, float y) {
     struct nk_rect r = nk_rect(x, y, RIGHT_W, MON_H + 44);
     nk_window_set_bounds(ctx, "Monitor", r);
     if (nk_begin(ctx, "Monitor", r, NK_WINDOW_TITLE | NK_WINDOW_BORDER | NK_WINDOW_NO_SCROLLBAR)) {
-        nk_layout_row_static(ctx, MON_H, MON_W, 1);
+        /* The picture with its own proportions (square pixels). */
+        float sw = (float)M()->screen_w, sh = (float)M()->screen_h;
+        float scale = fminf(MON_W / sw, MON_H / sh), w = sw * scale;
+        nk_layout_row_begin(ctx, NK_STATIC, MON_H, 2);
+        nk_layout_row_push(ctx, (MON_W - w) / 2);
+        nk_spacing(ctx, 1);
+        nk_layout_row_push(ctx, w);
         nk_image(ctx, nk_image_handle(snk_nkhandle(U.snk_img)));
+        nk_layout_row_end(ctx);
     }
     nk_end(ctx);
 }
@@ -802,6 +815,15 @@ static void controls_window(struct nk_context *ctx, float x, float y, float h) {
     nk_window_set_bounds(ctx, "Controls", r);
     if (nk_begin(ctx, "Controls", r, NK_WINDOW_TITLE | NK_WINDOW_BORDER)) {
         board_t *b = U.b;
+        /* The machine on the bench: a click puts the other one there. */
+        static const machine_t *const machines[] = { &machine_c64, &machine_zx48 };
+        nk_layout_row_dynamic(ctx, 24, 2);
+        for (int i = 0; i < 2; i++) {
+            bool cur = b->m == machines[i];
+            if (nk_widget_is_hovered(ctx) && !cur)
+                nk_tooltip(ctx, "Put this machine's board on the bench (the other one is switched off)");
+            if (nk_select_label(ctx, machines[i]->name, NK_TEXT_CENTERED, cur) && !cur) U.switch_to = machines[i];
+        }
         nk_layout_row_dynamic(ctx, 26, 4);
         if (nk_widget_is_hovered(ctx)) nk_tooltip(ctx, "Switch the machine off and on again: a restart (the faults stay)");
         if (nk_button_label(ctx, "Power cycle")) { board_power_on(b); select_pin(b->scope_pin); }
@@ -818,7 +840,7 @@ static void controls_window(struct nk_context *ctx, float x, float y, float h) {
         nk_layout_row_begin(ctx, NK_STATIC, 26, 2);
         nk_layout_row_push(ctx, 140);
         if (nk_widget_is_hovered(ctx))
-            nk_tooltip(ctx, "Hold to press RESET: shorts /RESET to GND (user port pin 3 to pin 1)");
+            nk_tooltip(ctx, M()->reset_help);
         nk_button_push_behavior(ctx, NK_BUTTON_REPEATER);
         bool down = nk_button_label(ctx, b->reset_button ? "RESET pressed" : "RESET");
         nk_button_pop_behavior(ctx);
@@ -881,8 +903,11 @@ static void controls_window(struct nk_context *ctx, float x, float y, float h) {
             }
             const char *cart = board_cart_name(b);
             if (cart) {
-                char line[96];
-                snprintf(line, sizeof(line), "Cartridge in the expansion port: %s", cart);
+                char line[96], slot[32] = "";
+                int sp = M()->cart_slot ? sim_find_part(S(), M()->cart_slot) : -1;
+                const char *cname = sp >= 0 ? board_connector_name(b, sp) : NULL;
+                for (int k = 0; cname && cname[k] && k < 31; k++) slot[k] = (char)tolower((unsigned char)cname[k]);
+                snprintf(line, sizeof(line), "Cartridge in the %s: %s", slot[0] ? slot : "slot", cart);
                 nk_layout_row_begin(ctx, NK_STATIC, 22, 2);
                 nk_layout_row_push(ctx, 330);
                 nk_label_colored(ctx, line, NK_TEXT_LEFT, COL_SOCKET);
@@ -892,10 +917,10 @@ static void controls_window(struct nk_context *ctx, float x, float y, float h) {
                 nk_layout_row_end(ctx);
             }
             nk_layout_row_dynamic(ctx, 26, 1);
-            if (nk_widget_is_hovered(ctx)) nk_tooltip(ctx, "Browse for a .prg or .crt file (Ctrl+O or Cmd+O)");
-            if (nk_button_label(ctx, "Open a program or a cartridge...")) browser_open();
+            if (nk_widget_is_hovered(ctx)) nk_tooltip(ctx, "Browse for a file to load (Ctrl+O or Cmd+O)");
+            if (nk_button_label(ctx, M()->files_title)) browser_open();
             nk_layout_row_dynamic(ctx, 20, 1);
-            nk_label_colored(ctx, U.status[0] ? U.status : "or drop a .prg or .crt file on the window",
+            nk_label_colored(ctx, U.status[0] ? U.status : "or drop a file on the window",
                              NK_TEXT_LEFT, COL_DIMTEXT);
             /* The recent ones, one click away. */
             if (browser_recent_count()) nk_label_colored(ctx, "recent (click to load again):", NK_TEXT_LEFT, COL_DIMTEXT);
@@ -1035,6 +1060,10 @@ void ui_frame(void) {
     fault_menu(ctx);
     /* Start the statistics over (the drawing above read this frame's). */
     board_stats_reset(U.b);
+    if (U.switch_to) {
+        switch_machine(U.switch_to);
+        U.switch_to = NULL;
+    }
     unlock_board();
 
     sg_begin_pass(&(sg_pass){ .action = { .colors[0] = { .load_action = SG_LOADACTION_CLEAR,
@@ -1114,6 +1143,10 @@ static void attach_board(board_t *b) {
         sg_destroy_view(U.view);
         sg_destroy_image(U.img);
     }
+    browser_set_machine(b->m);
+    char title[128];
+    snprintf(title, sizeof(title), "c64-hw-sim - %s", b->m->board_name);
+    sapp_set_window_title(title);
     U.img = sg_make_image(&(sg_image_desc){ .width = b->m->screen_w, .height = b->m->screen_h,
                                             .pixel_format = SG_PIXELFORMAT_RGBA8,
                                             .usage.dynamic_update = true });
@@ -1121,16 +1154,21 @@ static void attach_board(board_t *b) {
     U.snk_img = snk_make_image(&(snk_image_desc_t){ .texture_view = U.view, .sampler = U.smp });
 }
 
-/* Switch to another machine: its board replaces the one on the bench. */
-void ui_set_machine(const machine_t *m) {
+/* Switch to another machine: its board replaces the one on the bench
+ * (the board must be locked). */
+static void switch_machine(const machine_t *m) {
     if (U.b->m == m) return;
-    lock_board();
     inspect_open(U.b, -1);
     board_t *old = U.b;
     attach_board(board_create(m));
     board_destroy(old);
     U.autoload[0] = 0;
     U.status[0] = 0;
+}
+
+void ui_set_machine(const machine_t *m) {
+    lock_board();
+    switch_machine(m);
     unlock_board();
 }
 

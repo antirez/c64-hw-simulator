@@ -6,6 +6,8 @@
 
 /* Remember where we started from (and pick ./carts if it is there). */
 void browser_init(void);
+/* The machine files are for (rescans if the browser is open). */
+void browser_set_machine(const machine_t *m);
 void browser_open(void);
 void browser_close(void);
 bool browser_is_open(void);

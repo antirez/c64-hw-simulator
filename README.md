@@ -11,6 +11,10 @@ broken Commodore 64 looks like: when you simulate a broken part and the
 screen fills with garbage, that garbage was computed from the circuit, not
 chosen by someone who knew what to expect.
 
+It also simulates the ZX Spectrum 48K, board Issue 3B, in the same way
+(see [The ZX Spectrum 48K](#the-zx-spectrum-48k) below). A click switches
+the running simulation from one machine to the other.
+
 Here is an example. Lift pin 17 (A7) of the color RAM before power on, and
 the machine boots and looks healthy. The CPU writes and the VIC reads with
 the same wrong address, so the RAM simply aliases. Put the leg back, and
@@ -33,7 +37,8 @@ With this program you can do mainly two things:
 Please note that **even on fast computers** this program struggles to
 simulate the C64 hardware at real speed. A real C64 is simulated at 31% of
 its speed on an Apple M3 Max, 39% on an AMD Ryzen AI Max+ PRO 495 (Gorgon
-Halo), and 48% on an Apple M5 Max. This is not a problem for the goals of
+Halo), and 48% on an Apple M5 Max. The ZX Spectrum runs at 23%, 28% and
+34% of its speed on the same computers. This is not a problem for the goals of
 this program, but be warned: it is not an emulator to play games with.
 
 ![The character ROM pulled out while a BASIC program runs, then put back](docs/char-rom.gif)
@@ -58,6 +63,13 @@ logic chips, the PLA, and so forth.
 The chip cores are floooh's chips, taken from c64-llm (zlib license). The
 board comes from bwack's C64-250407-Replica-KiCad (CERN OHL). The PLA
 equations come from the 82S100 read-out by Mark Smith and Marko Mäkelä.
+
+For the ZX Spectrum: the Z80 is floooh's too, altered to run on the edges
+of its clock. The board comes from liveboxandy's KiCad files of the Issue
+3B, redrawn from PABB's gerbers (CC0). The ULA model is checked against
+the gate netlist of the 6C001 recovered from the die by the emu-russia/ula
+project (CC0). The ROM is Amstrad's, who allow its distribution. The ZX
+Spectrum Diagnostics ROM is by Brendan Alford and its contributors (LGPL).
 
 ## Building
 
@@ -139,6 +151,96 @@ shows where Commodore's manual says it should. Both cartridges are in
 Type on your keyboard as usual. ESC is RUN/STOP, PgUp is RESTORE, TAB is
 CTRL, and left ALT is C=.
 
+## The ZX Spectrum 48K
+
+The two buttons at the top of the control panel switch between the
+Commodore 64 and the ZX Spectrum 48K: the machine that runs is switched
+off, the other one on. `--machine zx48` starts with the Spectrum, and so
+does a snapshot or a ROM given on the command line.
+
+The board is the Issue 3B. Its chips:
+
+- ULA is the Ferranti 6C001. It makes the picture, makes the CPU clock,
+  drives the RAS and CAS of the lower RAM, and is the port 0xFE (keyboard,
+  border, MIC, EAR).
+- CPU is the Z80A, and ROM is the 23128.
+- LRAM0 to LRAM7 are the 4116 DRAMs of the lower 16K, where the screen is.
+  LRAMn has data bit n.
+- URAM0 to URAM7 are the 4532s of the upper 32K: 64K chips with one bad
+  half. The links next to them tell the board which half is good; here TI
+  chips are fitted.
+- MUX are the 74LS157 address multiplexers. OR and NAND, a 74LS32 and a
+  74LS00, select the upper RAM and time its RAS and CAS, with two RC
+  delays.
+- PAL is the LM1889 video modulator. It is analog and the one chip that
+  is not simulated: the monitor shows the ULA's picture.
+
+The CPU and the ULA share the lower 16K, and this is what makes the
+Spectrum interesting at the pin level. They sit on the two sides of a row
+of resistors: 470 ohm on the data bus, 330 ohm on the address lines after
+the multiplexers. When both drive the bus, each side sees its own value.
+When the CPU wants the lower 16K while the ULA fetches the screen, the ULA
+stops the CPU's clock: the famous contention. Here that happens because
+the ULA holds its clock pin, not because a table of delays says so. On the
+simulated board, the delays follow the 6,5,4,3,2,1,0,0 pattern known from
+the real machine. The first contended T-state comes 14337 T-states after
+/INT falls. Emulators put it at 14335 or 14336, counting from their own
+frame start.
+
+Keys: ESC is BREAK, TAB is SYMBOL SHIFT, left SHIFT is CAPS SHIFT. RESET
+shorts /RESET to GND on the edge connector. Open loads 48K snapshots
+(.sna, .z80): they are written straight into the DRAM chips, like the C64
+programs. A 16K ROM (.rom) is plugged into the edge connector like a ROM
+cartridge: it holds /ROMCS high and answers in place of the internal ROM.
+The ZX Spectrum Diagnostics ROM is in `carts/` (LGPL). On a healthy board
+it passes its tests; on a broken one it says what it found.
+
+The power supply is modeled by what it does. The 7805 makes +5V. The
+DC-DC converter (TR4, TR5 and the coil T1) makes +12V, and its charge
+pump makes -5V. The 4116s need all three: break TR4, or D12 of the -5V
+pump, and the lower RAM stops working. Without the crystal X1 there is no
+clock at all.
+
+`tests/zx-faults.sh` runs 13 common faults. As on the C64, the expected
+symptom of each one was written down before running the simulator. A
+missing lower RAM chip leaves the ROM's RAM test pattern on the screen,
+and a missing upper RAM chip gives a 16K Spectrum. `tests/zx-diag.sh`
+runs the Diagnostics ROM on a healthy board and with bad RAM chips: it
+finds the failing data bit (so the chip) where its manual says it does.
+
+### The ULA
+
+The ULA is not an emulator core: it is a model at its pins, at the
+resolution of its 14 MHz oscillator. Every half period it decides /RAS,
+/CAS, the address pins, the CPU clock, /INT, what it puts on the data bus
+for a port read, and the colour of the pixel. Its logic and its timing
+come from the die: the emu-russia/ula project recovered the 6C001's
+netlist, 661 NOR gates.
+
+`tools/ulacheck.c` keeps the model honest. The simulator logs what the
+ULA saw on its input pins at every half period (`ZXHW_ULALOG=file`), and
+the checker runs the 661 gates on the same inputs. Then it compares every
+output, at every half period, and the colour of every pixel. It has been
+run on a Spectrum booting, on the ROM's editor, and on a BASIC program
+that changes the border colour as fast as it can. There are three
+documented simplifications, listed at the top of `src/ula.c`, none of
+which matters to the chips on the board. Apart from them, every output
+and every pixel are the same. The gates also taught a detail: a new
+border colour shows only from the next 8-pixel boundary, because it goes
+through the same latch as the attributes. The netlist is not in this
+repository; `tools/ulacheck.c` says where to get it.
+
+### The Z80
+
+floooh's Z80 runs one T-state per call and puts its pins out when it suits
+an emulator. The ULA needs more: it looks at the address and /MREQ at the
+right half of a T-state to decide whether to stop the clock, and it can
+stop the clock in either phase. So `chips/z80.h` is now stepped on every
+edge of its clock, and its pins follow the Zilog timing diagrams. Its
+instructions, flags and timings are those of the original core.
+`tests/z80` has the tests: the pin waveforms of every kind of bus cycle,
+and ZEXDOC and ZEXALL. `chips/codegen` has the code generator.
+
 ## Command line
 
     ./c64-hw-sim --headless 200 --text --shot out.png --fault U17:removed
@@ -156,8 +258,14 @@ Other options:
 
 - `--at 150:U6.17:open --at 300:repair` breaks and repairs parts while the
   C64 runs; `RESET:pressed` and `RESET:released` work there too.
+- `--machine zx48` runs the ZX Spectrum; fault specs use its references
+  (`IC10:removed`, `D12:open`, `TI-3:open`).
 - `--nets` reports the nets where outputs fought.
 - `C64HW_TYPE=$'PRINT 1+1\n'` types text after boot.
+- `ZXHW_ULALOG=file[:cycle]` logs the ULA's pins for `tools/ulacheck.c`;
+  `ZXHW_CONTENTION=1` prints every contended T-state and its delay;
+  `ZXHW_TRACE=FROM:COUNT` prints the buses at every half period of COUNT
+  T-states from T-state FROM.
 - `C64HW_CHECK=1` checks every KERNAL read and every VIC fetch against the
   ideal memory map.
 - `--record 900:DIR --frames 90` (graphical mode) saves the window 90
@@ -181,7 +289,8 @@ Dead Test's flash series.
 ## How it works
 
 `tools/kicad2c.py` turns bwack's KiCad replica of the 250407 into C tables:
-216 parts, their pads, and 249 nets.
+216 parts, their pads, and 249 nets. It does the same for the Spectrum's
+Issue 3B.
 
 Every pin drives its net strongly, weakly (a pull-up), from a supply short,
 or not at all. The strongest drive wins. Two equal drives fighting are a
@@ -219,19 +328,27 @@ day clock, serial port and /PC handshake, the SID's paddle registers. In
 Each half cycle runs in three steps: the row address, then /RAS falls,
 then /CAS falls. The whole board settles after each step.
 
+On the Spectrum everything is timed by the ULA's oscillator: the board
+settles at every half period of it, eight times per CPU T-state. The ULA
+steps, the board settles, and the Z80 gets an edge of its clock if there
+was one. Then the memories see their strobes, and the board settles
+again.
+
 PLAN.md explains the reasoning behind these choices.
 
 ## Limits
 
 It is slow, between a third and half of real time on the computers listed
-above, because every pin of every chip is simulated.
+above (a fifth to a third for the Spectrum), because every pin of every
+chip is simulated.
 
 The floating and power models have the right shape, but their numbers
 (thresholds, drift times, crosstalk) are guesses. They are constants in
 `src/sim.c`.
 
 These analog parts are not simulated: the video output, the SID filter,
-the power supply, and the dot clock PLL. Three of them are modeled by what
+the power supply, and the dot clock PLL. On the Spectrum: the video
+modulator, the sound, and the tape input. Three of them are modeled by what
 they do, because the logic depends on them: the 50 Hz from the mains that
 drives the time of day clocks, the cassette motor driver, and the SID's
 paddle A/D converters (the time the 1800 pF capacitor takes to charge

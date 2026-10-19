@@ -1,14 +1,16 @@
-/* browser.c - the file browser to open programs (.prg) and cartridges
- * (.crt), made of nuklear's pieces since it has no file dialog.
+/* browser.c - the file browser to open what the machine on the bench
+ * takes (C64 programs and cartridges, Spectrum snapshots), made of
+ * nuklear's pieces since it has no file dialog.
  *
  * A window over the board with:
  *  - the folder as a row of buttons, one per level (click to go there),
  *    and shortcuts to carts/, the start folder, home;
  *  - a filter field that always has the keyboard: typing narrows the
  *    list; a path (starting with / or ~) and Enter goes there;
- *  - the list: folders, then programs and cartridges, each with what it
- *    is, read from the file (a BASIC program, or machine code and its
- *    address; the cartridge's name and kind, or why it can't be used);
+ *  - the list: folders, then the files the machine takes, each with what
+ *    it is, read from the file by the machine (a BASIC program, machine
+ *    code and its address, a cartridge's name and kind, a snapshot, or
+ *    why it can't be used);
  *  - arrows, Page Up/Down, Home/End move; Enter or a double click opens
  *    (a program is loaded and RUN; Shift+Enter or "Load" only loads it);
  *    Backspace with an empty filter goes up; Esc clears the filter, then
@@ -23,19 +25,21 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-enum { FE_UP, FE_DIR, FE_PRG, FE_CRT };
+enum { FE_UP, FE_DIR, FE_FILE };
 
 typedef struct {
     char name[256];
     int kind;           /* FE_* */
     long size;
     char info[96];      /* what it is */
-    bool bad;           /* a cartridge we can't use */
+    bool bad;           /* a file the machine can't use */
+    const file_kind_t *fk;
 } fentry_t;
 
 #define ROW_H 20
 
 static struct {
+    const machine_t *m;
     bool open, reopen;
     char dir[PATH_MAX];
     char start_dir[PATH_MAX], carts_dir[PATH_MAX], home_dir[PATH_MAX];
@@ -69,44 +73,6 @@ static bool contains_nocase(const char *s, const char *sub) {
     for (; *s; s++)
         if (!strncasecmp(s, sub, n)) return true;
     return n == 0;
-}
-
-static bool ends_with(const char *s, const char *ext) {
-    size_t n = strlen(s), e = strlen(ext);
-    return n > e && !strcasecmp(s + n - e, ext);
-}
-
-/* What a file is, from its first bytes. */
-static void file_info(fentry_t *e, const char *path) {
-    FILE *f = fopen(path, "rb");
-    uint8_t h[64] = {0};
-    size_t n = f ? fread(h, 1, sizeof(h), f) : 0;
-    if (f) fclose(f);
-    if (e->kind == FE_PRG) {
-        unsigned addr = n >= 2 ? h[0] | h[1] << 8 : 0;
-        if (n < 3) snprintf(e->info, sizeof(e->info), "too short for a program");
-        else if (addr == 0x0801) snprintf(e->info, sizeof(e->info), "BASIC program");
-        else snprintf(e->info, sizeof(e->info), "machine code at $%04X", addr);
-        return;
-    }
-    if (n < 64 || memcmp(h, "C64 CARTRIDGE   ", 16)) {
-        snprintf(e->info, sizeof(e->info), "not a cartridge file");
-        e->bad = true;
-        return;
-    }
-    char name[33];
-    memcpy(name, h + 0x20, 32);
-    name[32] = 0;
-    for (int i = (int)strlen(name) - 1; i >= 0 && name[i] == ' '; i--) name[i] = 0;
-    unsigned type = (unsigned)h[0x16] << 8 | h[0x17];
-    bool exrom = h[0x18] == 0, game = h[0x19] == 0;       /* lines held low */
-    if (type != 0) {
-        snprintf(e->info, sizeof(e->info), "type %u (bank switching): not supported", type);
-        e->bad = true;
-        return;
-    }
-    const char *kind = game && !exrom ? "Ultimax" : game ? "16K" : exrom ? "8K" : "no ROM lines";
-    snprintf(e->info, sizeof(e->info), "%s cartridge%s%s", kind, name[0] ? ": " : "", name);
 }
 
 static int cmp_entries(const void *a, const void *b) {
@@ -164,14 +130,20 @@ static void scan(const char *select_name) {
         snprintf(full, sizeof(full), "%s%s%s", B.dir, strcmp(B.dir, "/") ? "/" : "", de->d_name);
         struct stat st;
         if (stat(full, &st) != 0) continue;
-        int kind = S_ISDIR(st.st_mode) ? FE_DIR : ends_with(de->d_name, ".prg") ? FE_PRG :
-                   ends_with(de->d_name, ".crt") ? FE_CRT : -1;
-        if (kind < 0) continue;
+        char info[96];
+        bool bad = false;
+        const file_kind_t *fk = NULL;
+        if (!S_ISDIR(st.st_mode)) {
+            fk = B.m ? B.m->file_kind(full, info, sizeof(info), &bad) : NULL;
+            if (!fk) continue;
+        }
         fentry_t *e = add_entry();
         snprintf(e->name, sizeof(e->name), "%s", de->d_name);
-        e->kind = kind;
+        e->kind = fk ? FE_FILE : FE_DIR;
         e->size = (long)st.st_size;
-        if (kind != FE_DIR) file_info(e, full);
+        e->fk = fk;
+        e->bad = bad;
+        if (fk) snprintf(e->info, sizeof(e->info), "%s", info);
     }
     if (d) closedir(d);
     else snprintf(B.error, sizeof(B.error), "can't read %s", B.dir);
@@ -232,6 +204,11 @@ void browser_open(void) {
 }
 
 void browser_close(void) { B.open = false; }
+
+void browser_set_machine(const machine_t *m) {
+    B.m = m;
+    if (B.open) go(B.dir);
+}
 bool browser_is_open(void) { return B.open; }
 
 void browser_error(const char *msg) { snprintf(B.error, sizeof(B.error), "%s", msg); }
@@ -281,12 +258,14 @@ static const char *open_typed(bool run, bool *runp) {
     else snprintf(path, sizeof(path), "%s", B.filter);
     if (go(path)) return NULL;
     struct stat st;
-    if (stat(path, &st) == 0 && S_ISREG(st.st_mode) && (ends_with(path, ".prg") || ends_with(path, ".crt"))) {
+    char info[96];
+    bool bad = false;
+    if (stat(path, &st) == 0 && S_ISREG(st.st_mode) && B.m && B.m->file_kind(path, info, sizeof(info), &bad)) {
         snprintf(B.result, sizeof(B.result), "%s", path);
         *runp = run;
         return B.result;
     }
-    snprintf(B.error, sizeof(B.error), "no folder, program or cartridge at %s", path);
+    snprintf(B.error, sizeof(B.error), "no folder or file for the %s at %s", B.m ? B.m->name : "machine", path);
     return NULL;
 }
 
@@ -319,8 +298,7 @@ static struct nk_color kind_color(const fentry_t *e) {
     switch (e->kind) {
     case FE_UP:
     case FE_DIR: return nk_rgb(140, 190, 255);
-    case FE_CRT: return role_color[ROLE_ROM];
-    default: return COL_TEXT;
+    default: return e->fk && e->fk->role >= 0 ? role_color[e->fk->role] : COL_TEXT;
     }
 }
 
@@ -415,7 +393,7 @@ const char *browser_window(struct nk_context *ctx, struct nk_rect area, bool *ru
         nk_window_set_focus(ctx, "Browser");
         B.reopen = false;
     }
-    if (!nk_begin_titled(ctx, "Browser", "Open a program (.prg) or a cartridge (.crt)", r,
+    if (!nk_begin_titled(ctx, "Browser", B.m ? B.m->files_title : "Open a file", r,
                          NK_WINDOW_BORDER | NK_WINDOW_MOVABLE | NK_WINDOW_SCALABLE | NK_WINDOW_TITLE |
                          NK_WINDOW_CLOSABLE | NK_WINDOW_NO_SCROLLBAR)) {
         B.open = false;
@@ -494,10 +472,9 @@ const char *browser_window(struct nk_context *ctx, struct nk_rect area, bool *ru
             float y = rr.y + rr.h / 2;
             struct nk_color c = kind_color(e);
             text_at(cv, ctx, rr.x + cx[0], y, 0, name, c);
-            const char *type = e->kind == FE_PRG ? "program" : e->kind == FE_CRT ? "cartridge" :
-                               e->kind == FE_DIR ? "folder" : "";
+            const char *type = e->fk ? e->fk->type : e->kind == FE_DIR ? "folder" : "";
             text_at(cv, ctx, rr.x + rr.w * cx[1], y, 0, type, COL_DIMTEXT);
-            if (e->kind == FE_PRG || e->kind == FE_CRT) size_text(e->size, sz, sizeof(sz));
+            if (e->kind == FE_FILE) size_text(e->size, sz, sizeof(sz));
             text_at(cv, ctx, rr.x + rr.w * cx[3] - 12, y, 1, sz, COL_DIMTEXT);
             char info[128];
             snprintf(info, sizeof(info), "%s", e->info);
@@ -525,7 +502,7 @@ const char *browser_window(struct nk_context *ctx, struct nk_rect area, bool *ru
         nk_label_colored(ctx, B.error, NK_TEXT_LEFT, nk_rgb(240, 110, 100));
     } else if (B.filter[0] == '/' || B.filter[0] == '~') {
         nk_label_colored(ctx, "Enter: go to this folder, or open this file", NK_TEXT_LEFT, COL_HOVER);
-    } else if (s && (s->kind == FE_PRG || s->kind == FE_CRT)) {
+    } else if (s && s->kind == FE_FILE) {
         snprintf(line, sizeof(line), "%s/%s: %s", B.dir, s->name, s->info);
         fit_left(ctx, line, region.w - 8);
         nk_label_colored(ctx, line, NK_TEXT_LEFT, s->bad ? kind_color(s) : COL_HOVER);
@@ -541,14 +518,13 @@ const char *browser_window(struct nk_context *ctx, struct nk_rect area, bool *ru
     nk_layout_row_push(ctx, region.w - 3 * (bw + 4) - 4);
     nk_label(ctx, "", NK_TEXT_LEFT);
     nk_layout_row_push(ctx, bw);
-    if (s && s->kind == FE_PRG) {
+    if (s && s->fk && s->fk->norun) {
         if (nk_button_label(ctx, "Load") && !picked) picked = open_selected(false, run);
     } else {
         nk_label(ctx, "", NK_TEXT_LEFT);
     }
     nk_layout_row_push(ctx, bw);
-    const char *main_label = !s ? "" : s->kind == FE_PRG ? "Load and RUN" : s->kind == FE_CRT ? "Plug the cartridge" :
-                             "Open the folder";
+    const char *main_label = !s ? "" : s->fk ? s->fk->action : "Open the folder";
     if (s && nk_button_label(ctx, main_label) && !picked) picked = open_selected(true, run);
     else if (!s) nk_label(ctx, "", NK_TEXT_LEFT);
     nk_layout_row_push(ctx, bw);
