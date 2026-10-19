@@ -25,6 +25,16 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef _WIN32
+static char *path_realpath(const char *path, char *resolved) {
+    return _fullpath(resolved, path, PATH_MAX);
+}
+#else
+static char *path_realpath(const char *path, char *resolved) {
+    return realpath(path, resolved);
+}
+#endif
+
 enum { FE_UP, FE_DIR, FE_FILE };
 
 typedef struct {
@@ -161,7 +171,7 @@ static bool go(const char *path) {
     char want[PATH_MAX * 2], real[PATH_MAX];
     if (path[0] == '/') snprintf(want, sizeof(want), "%s", path);
     else snprintf(want, sizeof(want), "%s/%s", B.dir, path);
-    if (!realpath(want, real)) return false;
+    if (!path_realpath(want, real)) return false;
     struct stat st;
     if (stat(real, &st) != 0 || !S_ISDIR(st.st_mode)) return false;
     /* Remember the child, to select it when going up. */
@@ -221,7 +231,7 @@ bool browser_bounds(struct nk_rect *r) {
 
 void browser_add_recent(const char *path) {
     char real[PATH_MAX];
-    if (!realpath(path, real)) snprintf(real, sizeof(real), "%s", path);
+    if (!path_realpath(path, real)) snprintf(real, sizeof(real), "%s", path);
     int i, n = B.nrecent;
     for (i = 0; i < n && strcmp(B.recent[i], real); i++) ;
     if (i == n && n < 6) B.nrecent = ++n;
