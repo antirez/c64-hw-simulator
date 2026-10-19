@@ -364,6 +364,7 @@ static void zx_create(board_t *b) {
     z->pin_clk = part_pin(&s->parts[z->p_cpu], Z_CLK);
     ((rom_state_t *)s->parts[z->p_rom].state)->data = zx48_rom;
     ((ula_state_t *)s->parts[z->p_ula].state)->fb = b->screen;
+    ((ula_state_t *)s->parts[z->p_ula].state)->logging = ula_log_file != NULL;
     /* Resistors and links that do logic. */
     for (size_t i = 0; i < sizeof(series) / sizeof(series[0]); i++) {
         part_t *p = find(b, series[i]);

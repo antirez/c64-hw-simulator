@@ -34,7 +34,9 @@ typedef struct {
     uint32_t *fb;                   /* ULA_SCREEN_W x ULA_SCREEN_H */
     /* For checking the model against the gates: the inputs it saw at its
      * last step (bit 0 /MREQ, 1 /IOREQ, 2 /RD, 3 /WR, 4 A14, 5 A15, 6 A0,
-     * 7 the EAR level it reads, 8-15 D0-D7, 16-20 KB0-KB4). */
+     * 7 the EAR level it reads, 8-15 D0-D7, 16-20 KB0-KB4), kept only
+     * while 'logging' (set by the machine for ula_log()). */
+    bool logging;
     uint32_t inputs;
     uint8_t pix;                    /* the colour of the last pixel (bit 3 bright) */
 } ula_state_t;

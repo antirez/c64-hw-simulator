@@ -80,6 +80,22 @@ static unsigned attr_addr(unsigned v, unsigned k) { return 0x1800 | ((v & 0xF8) 
 
 static bool on_screen(const ula_state_t *u) { return u->c < 256 && u->v < 192; }
 
+/* Read a pin for the log only: like pin_in(), but a floating MOS input
+ * reads the charge left on the net without drawing noise, so logging
+ * can't change the simulation. */
+static int peek(sim_t *s, part_t *p, int number) {
+    const pin_t *pin = &s->pins[p->pinmap[number]];
+    int ttl = pin->flags & PIN_TTL;
+    if (pin->fault == PF_OPEN || pin->root < 0) return ttl ? 1 : pin->held;
+    uint8_t v = s->nread[pin->root];
+    return (v & 1) | ((v >> 1) & ttl);
+}
+static unsigned peek_bus(sim_t *s, part_t *p, const int *pins, int n) {
+    unsigned v = 0;
+    for (int i = 0; i < n; i++) v |= (unsigned)peek(s, p, pins[i]) << i;
+    return v;
+}
+
 /* What the ULA drives on its pins, from its state and its inputs (the
  * paths that don't wait for the clock: RAS for the CPU, ROMCS, WE, the
  * port read). */
@@ -164,10 +180,11 @@ void ula_step(sim_t *s, part_t *p) {
     bool mreq = !pin_in(s, p, P_MREQ), iorq = !pin_in(s, p, P_IOREQ);
     bool rd = !pin_in(s, p, P_RD), wr = !pin_in(s, p, P_WR);
     bool a14 = pin_in(s, p, P_A14), a15 = pin_in(s, p, P_A15);
-    u->inputs = (uint32_t)(!mreq) | (uint32_t)(!iorq) << 1 | (uint32_t)(!rd) << 2 | (uint32_t)(!wr) << 3 |
-                (uint32_t)a14 << 4 | (uint32_t)a15 << 5 | (uint32_t)pin_in(s, p, P_A0) << 6 |
-                (uint32_t)(u->ear_in || pin_in(s, p, P_SOUND)) << 7 |
-                part_read_bus(s, p, data_pins, 8) << 8 | part_read_bus(s, p, kb_pins, 5) << 16;
+    if (u->logging)
+        u->inputs = (uint32_t)(!mreq) | (uint32_t)(!iorq) << 1 | (uint32_t)(!rd) << 2 | (uint32_t)(!wr) << 3 |
+                    (uint32_t)a14 << 4 | (uint32_t)a15 << 5 | (uint32_t)peek(s, p, P_A0) << 6 |
+                    (uint32_t)(u->ear_in || peek(s, p, P_SOUND)) << 7 |
+                    peek_bus(s, p, data_pins, 8) << 8 | peek_bus(s, p, kb_pins, 5) << 16;
     /* The screen fetch (see the table at the top). */
     bool ras = false, cas = false, ae = false;
     uint8_t addr = u->addr;
@@ -245,11 +262,12 @@ static void ula_reset(sim_t *s, part_t *p) {
     (void)s;
     ula_state_t *u = p->state;
     uint32_t *fb = u->fb;
-    bool ear = u->ear_in, running = u->running;
+    bool ear = u->ear_in, running = u->running, logging = u->logging;
     memset(u, 0, sizeof(*u));
     u->fb = fb;
     u->ear_in = ear;
     u->running = running;
+    u->logging = logging;
     u->cpuclk = true;
 }
 
