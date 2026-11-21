@@ -148,11 +148,12 @@ so loading works on a broken board too.
 
 Cartridges (.crt) are plugged into the expansion port (the C64 is
 switched off and on, as you would do); the browser shows a cartridge's
-kind and name. The plain ones are supported, 8K, 16K and Ultimax, which
-is what the diagnostic cartridges are: Dead Test replaces the KERNAL and
-runs on boards with dead RAM or ROMs. A cartridge only drives the
-expansion port pins, everything else is the board: a dirty contact on
-the port is a fault on a CN6 pin.
+kind and name. The simulator runs plain 8K, 16K and Ultimax cartridges,
+and EasyFlash images with the boot jumper set. The EasyFlash model supports
+bank selection, memory modes and its 256 bytes of SRAM. Flash contents are
+read-only. Dead Test replaces the KERNAL and runs on boards with dead RAM
+or ROMs. A cartridge drives only the expansion port pins. A dirty contact
+on the port is a fault on a CN6 pin.
 
 Dead Test gives the flash codes of its manual (one flash for U12, bit 7,
 up to eight for U21, bit 0). For the Diagnostic 586220 cartridge you can

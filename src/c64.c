@@ -878,12 +878,12 @@ static const file_kind_t *c64_file_kind(const char *path, char *info, int len, b
     for (int i = (int)strlen(name) - 1; i >= 0 && name[i] == ' '; i--) name[i] = 0;
     unsigned type = (unsigned)h[0x16] << 8 | h[0x17];
     bool exrom = h[0x18] == 0, game = h[0x19] == 0;       /* lines held low */
-    if (type != 0) {
+    if (type != 0 && type != 32) {
         snprintf(info, len, "type %u (bank switching): not supported", type);
         *bad = true;
         return &c64_crt;
     }
-    const char *kind = game && !exrom ? "Ultimax" : game ? "16K" : exrom ? "8K" : "no ROM lines";
+    const char *kind = type == 32 ? "EasyFlash" : game && !exrom ? "Ultimax" : game ? "16K" : exrom ? "8K" : "no ROM lines";
     snprintf(info, len, "%s cartridge%s%s", kind, name[0] ? ": " : "", name);
     return &c64_crt;
 }
